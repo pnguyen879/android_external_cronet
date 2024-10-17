@@ -220,8 +220,7 @@ void NaClForkDelegate::Init(const int sandboxdesc,
       };
       const base::CommandLine& current_cmd_line =
           *base::CommandLine::ForCurrentProcess();
-      cmd_line.CopySwitchesFrom(current_cmd_line, kForwardSwitches,
-                                std::size(kForwardSwitches));
+      cmd_line.CopySwitchesFrom(current_cmd_line, kForwardSwitches);
 
       // The command line needs to be tightly controlled to use
       // |helper_bootstrap_exe|. So from now on, argv_to_launch should be
@@ -353,7 +352,12 @@ pid_t NaClForkDelegate::Fork(const std::string& process_type,
                              const std::string& channel_id) {
   VLOG(1) << "NaClForkDelegate::Fork";
 
-  DCHECK(fds.size() == kNumPassedFDs);
+  // The metrics shared memory handle may or may not be in |fds|, depending on
+  // whether the feature flag to pass the handle on startup was enabled in the
+  // parent; there should either be kNumPassedFDs or kNumPassedFDs-1 present.
+  // TODO(crbug/1028263): Only check for kNumPassedFDs once passing the metrics
+  // shared memory handle on startup is launched.
+  DCHECK(fds.size() == kNumPassedFDs || fds.size() == kNumPassedFDs - 1);
 
   if (status_ != kNaClHelperSuccess) {
     LOG(ERROR) << "Cannot launch NaCl process: nacl_helper failed to start";
@@ -380,7 +384,9 @@ pid_t NaClForkDelegate::Fork(const std::string& process_type,
   }
 
   // Now see if the other end managed to fork.
-  base::Pickle reply_pickle(reply_buf, reply_size);
+  base::Pickle reply_pickle = base::Pickle::WithUnownedBuffer(
+      base::span(reinterpret_cast<uint8_t*>(reply_buf),
+                 base::checked_cast<size_t>(reply_size)));
   base::PickleIterator iter(reply_pickle);
   pid_t nacl_child;
   if (!iter.ReadInt(&nacl_child)) {
@@ -414,7 +420,9 @@ bool NaClForkDelegate::GetTerminationStatus(pid_t pid, bool known_dead,
     return false;
   }
 
-  base::Pickle reply_pickle(reply_buf, reply_size);
+  base::Pickle reply_pickle = base::Pickle::WithUnownedBuffer(
+      base::span(reinterpret_cast<uint8_t*>(reply_buf),
+                 base::checked_cast<size_t>(reply_size)));
   base::PickleIterator iter(reply_pickle);
   int termination_status;
   if (!iter.ReadInt(&termination_status) ||

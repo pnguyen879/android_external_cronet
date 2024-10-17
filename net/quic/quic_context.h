@@ -12,6 +12,7 @@
 #include "base/time/time.h"
 #include "net/base/features.h"
 #include "net/base/host_port_pair.h"
+#include "net/third_party/quiche/src/quiche/quic/core/crypto/quic_crypto_client_config.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_connection.h"
 
 namespace net {
@@ -31,9 +32,8 @@ DefaultSupportedQuicVersions() {
 // QUIC shared code but that Chrome refuses to use because modern clients
 // should only use versions at least as recent as the oldest default version.
 inline NET_EXPORT_PRIVATE quic::ParsedQuicVersionVector ObsoleteQuicVersions() {
-  return quic::ParsedQuicVersionVector{
-      quic::ParsedQuicVersion::Q043(), quic::ParsedQuicVersion::Q046(),
-      quic::ParsedQuicVersion::Q050(), quic::ParsedQuicVersion::Draft29()};
+  return quic::ParsedQuicVersionVector{quic::ParsedQuicVersion::Q046(),
+                                       quic::ParsedQuicVersion::Draft29()};
 }
 
 // All of the QUIC versions that Chrome can support. This is the subset of
@@ -96,8 +96,6 @@ struct NET_EXPORT QuicParams {
   // Versions of QUIC which may be used.
   quic::ParsedQuicVersionVector supported_versions =
       DefaultSupportedQuicVersions();
-  // User agent description to send in the QUIC handshake.
-  std::string user_agent_id;
   // Limit on the size of QUIC packets.
   size_t max_packet_length = quic::kDefaultMaxPacketSize;
   // Maximum number of server configs that are to be stored in
@@ -105,6 +103,10 @@ struct NET_EXPORT QuicParams {
   size_t max_server_configs_stored_in_properties = 0u;
   // QUIC will be used for all connections in this set.
   std::set<HostPortPair> origins_to_force_quic_on;
+  // WebTransport developer mode disables the requirement that all QUIC
+  // connections are anchored to a system certificate root, but only for
+  // WebTransport connections.
+  bool webtransport_developer_mode = false;
   // Set of QUIC tags to send in the handshake's connection options.
   quic::QuicTagVector connection_options;
   // Set of QUIC tags to send in the handshake's connection options that only
@@ -142,6 +144,9 @@ struct NET_EXPORT QuicParams {
   // If true, connection migration v2 will be used to migrate existing
   // sessions to network when the platform indicates that the default network
   // is changing.
+  // Use the value of the flag as the default value. This is needed because unit
+  // tests does not go through network_session_configuration which causes
+  // discrepancy.
   bool migrate_sessions_on_network_change_v2 =
       base::FeatureList::IsEnabled(features::kMigrateSessionsOnNetworkChangeV2);
   // If true, connection migration v2 may be used to migrate active QUIC
@@ -159,6 +164,10 @@ struct NET_EXPORT QuicParams {
   // A session can be migrated if its idle time is within this period.
   base::TimeDelta idle_session_migration_period =
       kDefaultIdleSessionMigrationPeriod;
+  // Probing frequency for the multi-port alt path, represented in the number of
+  // seconds. When this param is 0, quiche will ignore it and use its own
+  // default.
+  int multi_port_probing_interval = 0;
   // Maximum time the session could be on the non-default network before
   // migrates back to default network. Defaults to
   // kMaxTimeOnNonDefaultNetwork.
@@ -177,9 +186,6 @@ struct NET_EXPORT QuicParams {
   // If true, allows QUIC to use alternative services with a different
   // hostname from the origin.
   bool allow_remote_alt_svc = true;
-  // If true, the quic stream factory may race connection from stale dns
-  // result with the original dns resolution
-  bool race_stale_dns_on_connection = false;
   // If true, estimate the initial RTT for QUIC connections based on network.
   bool estimate_initial_rtt = false;
   // The initial rtt that will be used in crypto handshake if no cached
@@ -193,14 +199,17 @@ struct NET_EXPORT QuicParams {
   // (best effort).
   int ios_network_service_type = 0;
   // Delay for the 1st time the alternative service is marked broken.
-  absl::optional<base::TimeDelta> initial_delay_for_broken_alternative_service;
+  std::optional<base::TimeDelta> initial_delay_for_broken_alternative_service;
   // If true, the delay for broke alternative service would be initial_delay *
   // (1 << broken_count). Otherwise, the delay would be initial_delay, 5min,
   // 10min and so on.
-  absl::optional<bool> exponential_backoff_on_initial_delay;
+  std::optional<bool> exponential_backoff_on_initial_delay;
   // If true, delay main job even the request can be sent immediately on an
   // available SPDY session.
   bool delay_main_job_with_available_spdy_session = false;
+
+  // If true, ALPS uses new codepoint to negotiates application settings.
+  bool use_new_alps_codepoint = false;
 };
 
 // QuicContext contains QUIC-related variables that are shared across all of the
@@ -210,7 +219,7 @@ class NET_EXPORT_PRIVATE QuicContext {
   QuicContext();
   explicit QuicContext(
       std::unique_ptr<quic::QuicConnectionHelperInterface> helper);
-  ~QuicContext();
+  virtual ~QuicContext();
 
   quic::QuicConnectionHelperInterface* helper() { return helper_.get(); }
   const quic::QuicClock* clock() { return helper_->GetClock(); }
@@ -237,6 +246,10 @@ class NET_EXPORT_PRIVATE QuicContext {
 
 // Initializes QuicConfig based on the specified parameters.
 quic::QuicConfig InitializeQuicConfig(const QuicParams& params);
+
+// Configures QuicCryptoClientConfig with Chromium-specific settings.
+void ConfigureQuicCryptoClientConfig(
+    quic::QuicCryptoClientConfig& crypto_config);
 
 }  // namespace net
 

@@ -11,8 +11,6 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "url/url_canon_stdstring.h"
-#include "url/url_util.h"
 #include "quiche/quic/core/connecting_client_socket.h"
 #include "quiche/quic/core/http/quic_spdy_stream.h"
 #include "quiche/quic/core/quic_connection_id.h"
@@ -24,8 +22,10 @@
 #include "quiche/quic/test_tools/quic_test_utils.h"
 #include "quiche/quic/tools/quic_simple_server_backend.h"
 #include "quiche/common/masque/connect_udp_datagram_payload.h"
+#include "quiche/common/platform/api/quiche_googleurl.h"
 #include "quiche/common/platform/api/quiche_mem_slice.h"
 #include "quiche/common/platform/api/quiche_test.h"
+#include "quiche/common/platform/api/quiche_url_utils.h"
 
 namespace quic::test {
 namespace {
@@ -113,6 +113,11 @@ class MockSocket : public ConnectingClientSocket {
 class ConnectUdpTunnelTest : public quiche::test::QuicheTest {
  public:
   void SetUp() override {
+#if defined(_WIN32)
+    WSADATA wsa_data;
+    const WORD version_required = MAKEWORD(2, 2);
+    ASSERT_EQ(WSAStartup(version_required, &wsa_data), 0);
+#endif
     auto socket = std::make_unique<StrictMock<MockSocket>>();
     socket_ = socket.get();
     ON_CALL(socket_factory_,
@@ -214,14 +219,6 @@ TEST_F(ConnectUdpTunnelTest, OpenTunnelToIpv4LiteralTarget) {
   EXPECT_FALSE(tunnel_.IsTunnelOpenToTarget());
 }
 
-std::string PercentEncode(absl::string_view input) {
-  std::string encoded;
-  url::StdStringCanonOutput canon_output(&encoded);
-  url::EncodeURIComponent(input.data(), input.size(), &canon_output);
-  canon_output.Complete();
-  return encoded;
-}
-
 TEST_F(ConnectUdpTunnelTest, OpenTunnelToIpv6LiteralTarget) {
   EXPECT_CALL(*socket_, ConnectBlocking()).WillOnce(Return(absl::OkStatus()));
   EXPECT_CALL(*socket_, ReceiveAsync(Gt(0)));
@@ -240,15 +237,19 @@ TEST_F(ConnectUdpTunnelTest, OpenTunnelToIpv6LiteralTarget) {
                 Property(&QuicBackendResponse::trailers, IsEmpty()),
                 Property(&QuicBackendResponse::body, IsEmpty()))));
 
+  std::string path;
+  ASSERT_TRUE(quiche::ExpandURITemplate(
+      "/.well-known/masque/udp/{target_host}/{target_port}/",
+      {{"target_host", absl::StrCat("[", TestLoopback6().ToString(), "]")},
+       {"target_port", absl::StrCat(kAcceptablePort)}},
+      &path));
+
   spdy::Http2HeaderBlock request_headers;
   request_headers[":method"] = "CONNECT";
   request_headers[":protocol"] = "connect-udp";
   request_headers[":authority"] = "proxy.test";
   request_headers[":scheme"] = "https";
-  request_headers[":path"] = absl::StrCat(
-      "/.well-known/masque/udp/",
-      PercentEncode(absl::StrCat("[", TestLoopback6().ToString(), "]")), "/",
-      kAcceptablePort, "/");
+  request_headers[":path"] = path;
 
   tunnel_.OpenTunnel(request_headers);
   EXPECT_TRUE(tunnel_.IsTunnelOpenToTarget());

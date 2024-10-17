@@ -10,20 +10,21 @@ for more details on the presubmit API built into depot_tools.
 import copy
 import io
 import json
+import re
 import sys
 
 from collections import OrderedDict
 
-USE_PYTHON3 = True
-
 VALID_EXPERIMENT_KEYS = [
     'name', 'forcing_flag', 'params', 'enable_features', 'disable_features',
-    'min_os_version', '//0', '//1', '//2', '//3', '//4', '//5', '//6', '//7',
-    '//8', '//9'
+    'min_os_version', 'hardware_classes', 'exclude_hardware_classes', '//0',
+    '//1', '//2', '//3', '//4', '//5', '//6', '//7', '//8', '//9'
 ]
 
 FIELDTRIAL_CONFIG_FILE_NAME = 'fieldtrial_testing_config.json'
 
+BASE_FEATURE_PATTERN = r"BASE_FEATURE\((.*?),(.*?),(.*?)\);"
+BASE_FEATURE_RE = re.compile(BASE_FEATURE_PATTERN, flags=re.MULTILINE+re.DOTALL)
 
 def PrettyPrint(contents):
   """Pretty prints a fieldtrial configuration.
@@ -51,6 +52,9 @@ def PrettyPrint(contents):
   #                     params: {sorted dict}
   #                     enable_features: [sorted features]
   #                     disable_features: [sorted features]
+  #                     min_os_version: "version string"
+  #                     hardware_classes: [sorted classes]
+  #                     exclude_hardware_classes: [sorted classes]
   #                     (Unexpected extra keys will be caught by the validator)
   #                 }
   #             ],
@@ -87,9 +91,15 @@ def PrettyPrint(contents):
         if 'disable_features' in experiment:
           ordered_experiment['disable_features'] = \
               sorted(experiment['disable_features'])
-        ordered_experiment_config['experiments'].append(ordered_experiment)
         if 'min_os_version' in experiment:
           ordered_experiment['min_os_version'] = experiment['min_os_version']
+        if 'hardware_classes' in experiment:
+          ordered_experiment['hardware_classes'] = \
+              sorted(experiment['hardware_classes'])
+        if 'exclude_hardware_classes' in experiment:
+          ordered_experiment['exclude_hardware_classes'] = \
+              sorted(experiment['exclude_hardware_classes'])
+        ordered_experiment_config['experiments'].append(ordered_experiment)
       ordered_study.append(ordered_experiment_config)
     ordered_config[key] = ordered_study
   return json.dumps(
@@ -323,6 +333,92 @@ def CheckDuplicatedFeatures(new_json_data, old_json_data, message_type):
                   'studies: %s' % ', '.join(duplicated_features_strings))
   ]
 
+
+def CheckUndeclaredFeatures(input_api, output_api, json_data, changed_lines):
+  """Checks that feature names are all valid declared features.
+
+  There have been more than one instance of developers accidentally mistyping
+  a feature name in the fieldtrial_testing_config.json file, which leads
+  to the config silently doing nothing.
+
+  This check aims to catch these errors by validating that the feature name
+  is defined somewhere in the Chrome source code.
+
+  Args:
+    input_api: Presubmit InputApi
+    output_api: Presubmit OutputApi
+    json_data: The parsed fieldtrial_testing_config.json
+    changed_lines: The AffectedFile.ChangedContents() of the json file
+
+  Returns:
+    List of validation messages - empty if there are no errors.
+  """
+
+  declared_features = set()
+  # I was unable to figure out how to do a proper top-level include that did
+  # not depend on getting the path from input_api. I found this pattern
+  # elsewhere in the code base. Please change to a top-level include if you
+  # know how.
+  old_sys_path = sys.path[:]
+  try:
+    sys.path.append(input_api.os_path.join(
+            input_api.PresubmitLocalPath(), 'presubmit'))
+    # pylint: disable=import-outside-toplevel
+    import find_features
+    # pylint: enable=import-outside-toplevel
+    declared_features = find_features.FindDeclaredFeatures(input_api)
+  finally:
+    sys.path = old_sys_path
+
+  if not declared_features:
+    return [message_type("Presubmit unable to find any declared flags "
+                         "in source. Please check PRESUBMIT.py for errors.")]
+
+  messages = []
+  # Join all changed lines into a single string. This will be used to check
+  # if feature names are present in the changed lines by substring search.
+  changed_contents = " ".join([x[1].strip() for x in changed_lines])
+  for study_name in json_data:
+    study = json_data[study_name]
+    for config in study:
+      features = set(_GetStudyConfigFeatures(config))
+      # Determine if a study has been touched by the current change by checking
+      # if any of the features are part of the changed lines of the file.
+      # This limits the noise from old configs that are no longer valid.
+      probably_affected = False
+      for feature in features:
+        if feature in changed_contents:
+          probably_affected = True
+          break
+
+      if probably_affected and not declared_features.issuperset(features):
+        missing_features = features - declared_features
+        # CrOS has external feature declarations starting with this prefix
+        # (checked by build tools in base/BUILD.gn).
+        # Warn, but don't break, if they are present in the CL
+        cros_late_boot_features = {s for s in missing_features if
+                                          s.startswith("CrOSLateBoot")}
+        missing_features = missing_features - cros_late_boot_features
+        if cros_late_boot_features:
+          msg = ("CrOSLateBoot features added to "
+                 "study %s are not checked by presubmit."
+                 "\nPlease manually check that they exist in the code base."
+                ) % study_name
+          messages.append(output_api.PresubmitResult(msg,
+                                                     cros_late_boot_features))
+
+        if missing_features:
+          msg = ("Presubmit was unable to verify existence of features in "
+                  "study %s.\nThis happens most commonly if the feature is "
+                  "defined by code generation.\n"
+                  "Please verify that the feature names have been spelled "
+                  "correctly before submitting. The affected features are:"
+              ) % study_name
+          messages.append(output_api.PresubmitResult(msg, missing_features))
+
+  return messages
+
+
 def CommonChecks(input_api, output_api):
   affected_files = input_api.AffectedFiles(
       include_deletes=False,
@@ -352,6 +448,10 @@ def CommonChecks(input_api, output_api):
           json_data,
           input_api.json.loads('\n'.join(f.OldContents())),
           output_api.PresubmitError)
+      if result:
+        return result
+      result = CheckUndeclaredFeatures(input_api, output_api, json_data,
+                                       f.ChangedContents())
       if result:
         return result
     except ValueError:

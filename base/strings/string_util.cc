@@ -4,7 +4,6 @@
 
 #include "base/strings/string_util.h"
 
-#include <ctype.h>
 #include <errno.h>
 #include <math.h>
 #include <stdarg.h>
@@ -14,9 +13,10 @@
 #include <string.h>
 #include <time.h>
 #include <wchar.h>
-#include <wctype.h>
 
 #include <limits>
+#include <optional>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -29,7 +29,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/third_party/icu/icu_utf.h"
 #include "build/build_config.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 
@@ -235,8 +234,8 @@ bool IsStringASCII(StringPiece16 str) {
   return internal::DoIsStringASCII(str.data(), str.length());
 }
 
-#if defined(WCHAR_T_IS_UTF32)
-bool IsStringASCII(WStringPiece str) {
+#if defined(WCHAR_T_IS_32_BIT)
+bool IsStringASCII(std::wstring_view str) {
   return internal::DoIsStringASCII(str.data(), str.length());
 }
 #endif
@@ -392,7 +391,7 @@ std::u16string ReplaceStringPlaceholders(
     StringPiece16 format_string,
     const std::vector<std::u16string>& subst,
     std::vector<size_t>* offsets) {
-  absl::optional<std::u16string> replacement =
+  std::optional<std::u16string> replacement =
       internal::DoReplaceStringPlaceholders(
           format_string, subst,
           /*placeholder_prefix*/ u'$',
@@ -406,7 +405,7 @@ std::u16string ReplaceStringPlaceholders(
 std::string ReplaceStringPlaceholders(StringPiece format_string,
                                       const std::vector<std::string>& subst,
                                       std::vector<size_t>* offsets) {
-  absl::optional<std::string> replacement =
+  std::optional<std::string> replacement =
       internal::DoReplaceStringPlaceholders(
           format_string, subst,
           /*placeholder_prefix*/ '$',

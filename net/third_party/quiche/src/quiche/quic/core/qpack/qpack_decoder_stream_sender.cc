@@ -7,14 +7,20 @@
 #include <cstddef>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include "absl/strings/string_view.h"
 #include "quiche/quic/core/qpack/qpack_instructions.h"
+#include "quiche/quic/platform/api/quic_flag_utils.h"
 #include "quiche/quic/platform/api/quic_logging.h"
 
 namespace quic {
 
-QpackDecoderStreamSender::QpackDecoderStreamSender() : delegate_(nullptr) {}
+QpackDecoderStreamSender::QpackDecoderStreamSender()
+    : delegate_(nullptr),
+      // None of the instructions sent by the QpackDecoderStreamSender
+      // are strings, so huffman encoding is not relevant.
+      instruction_encoder_(HuffmanEncoding::kEnabled) {}
 
 void QpackDecoderStreamSender::SendInsertCountIncrement(uint64_t increment) {
   instruction_encoder_.Encode(
@@ -33,10 +39,18 @@ void QpackDecoderStreamSender::SendStreamCancellation(QuicStreamId stream_id) {
 }
 
 void QpackDecoderStreamSender::Flush() {
-  if (buffer_.empty()) {
+  if (buffer_.empty() || delegate_ == nullptr) {
     return;
   }
-
+  if (GetQuicRestartFlag(quic_opport_bundle_qpack_decoder_data4)) {
+    QUIC_RESTART_FLAG_COUNT_N(quic_opport_bundle_qpack_decoder_data4, 3, 4);
+    // Swap buffer_ before calling WriteStreamData, which might result in a
+    // reentrant call to `Flush()`.
+    std::string copy;
+    std::swap(copy, buffer_);
+    delegate_->WriteStreamData(copy);
+    return;
+  }
   delegate_->WriteStreamData(buffer_);
   buffer_.clear();
 }

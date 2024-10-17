@@ -62,12 +62,19 @@ class QuicSimpleServerSession : public QuicServerSessionBase {
       const QuicCryptoServerConfig* crypto_config,
       QuicCompressedCertsCache* compressed_certs_cache) override;
 
+  // Overridden to handle conversion from bidi pending stream.
+  QuicStream* ProcessBidirectionalPendingStream(
+      PendingStream* pending) override;
+
   QuicSimpleServerBackend* server_backend() {
     return quic_simple_server_backend_;
   }
 
-  bool ShouldNegotiateWebTransport() override {
-    return quic_simple_server_backend_->SupportsWebTransport();
+  WebTransportHttp3VersionSet LocallySupportedWebTransportVersions()
+      const override {
+    return quic_simple_server_backend_->SupportsWebTransport()
+               ? kDefaultSupportedWebTransportVersions
+               : WebTransportHttp3VersionSet();
   }
   HttpDatagramSupport LocalHttpDatagramSupport() override {
     if (ShouldNegotiateWebTransport()) {

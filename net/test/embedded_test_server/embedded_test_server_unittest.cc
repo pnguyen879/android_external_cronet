@@ -241,7 +241,7 @@ TEST_P(EmbeddedTestServerTest, RegisterRequestHandler) {
 
 TEST_P(EmbeddedTestServerTest, ServeFilesFromDirectory) {
   base::FilePath src_dir;
-  ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &src_dir));
+  ASSERT_TRUE(base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &src_dir));
   server_->ServeFilesFromDirectory(
       src_dir.AppendASCII("net").AppendASCII("data"));
   ASSERT_TRUE(server_->Start());
@@ -270,7 +270,7 @@ TEST_P(EmbeddedTestServerTest, MockHeadersWithoutCRLF) {
     return;
 
   base::FilePath src_dir;
-  ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &src_dir));
+  ASSERT_TRUE(base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &src_dir));
   server_->ServeFilesFromDirectory(
       src_dir.AppendASCII("net").AppendASCII("data").AppendASCII(
           "embedded_test_server"));
@@ -350,7 +350,7 @@ TEST_P(EmbeddedTestServerTest, ConnectionListenerRead) {
 #else
 #define MAYBE_ConnectionListenerComplete ConnectionListenerComplete
 #endif
-TEST_P(EmbeddedTestServerTest, DISABLED_ConnectionListenerComplete) {
+TEST_P(EmbeddedTestServerTest, MAYBE_ConnectionListenerComplete) {
   // OnResponseCompletedSuccessfully() makes the assumption that a connection is
   // "finished" before the socket is closed, and in the case of HTTP/2 this is
   // not supported
@@ -694,7 +694,7 @@ class EmbeddedTestServerThreadingTestDelegate
     // Create the test server instance.
     EmbeddedTestServer server(type_, protocol_);
     base::FilePath src_dir;
-    ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &src_dir));
+    ASSERT_TRUE(base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &src_dir));
     ASSERT_TRUE(server.Start());
 
     // Make a request and wait for the reply.

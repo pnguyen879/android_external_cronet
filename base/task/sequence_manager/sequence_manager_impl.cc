@@ -4,10 +4,14 @@
 
 #include "base/task/sequence_manager/sequence_manager_impl.h"
 
+#include <array>
 #include <atomic>
+#include <optional>
 #include <queue>
+#include <string_view>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/compiler_specific.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/stack_trace.h"
@@ -22,6 +26,7 @@
 #include "base/rand_util.h"
 #include "base/ranges/algorithm.h"
 #include "base/task/sequence_manager/enqueue_order.h"
+#include "base/task/sequence_manager/task_queue_impl.h"
 #include "base/task/sequence_manager/task_time_observer.h"
 #include "base/task/sequence_manager/thread_controller_impl.h"
 #include "base/task/sequence_manager/thread_controller_with_message_pump_impl.h"
@@ -36,11 +41,16 @@
 #include "base/trace_event/base_tracing.h"
 #include "build/build_config.h"
 #include "third_party/abseil-cpp/absl/base/attributes.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 namespace sequence_manager {
 namespace {
+
+// Whether SequenceManagerImpl records crash keys. Enable via Finch when needed
+// for an investigation. Disabled by default to avoid unnecessary overhead.
+BASE_FEATURE(kRecordSequenceManagerCrashKeys,
+             "RecordSequenceManagerCrashKeys",
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 ABSL_CONST_INIT thread_local internal::SequenceManagerImpl*
     thread_local_sequence_manager = nullptr;
@@ -131,7 +141,7 @@ SequenceManager::MetricRecordingSettings InitializeMetricRecordingSettings(
 // Writes |address| in hexadecimal ("0x11223344") form starting from |output|
 // and moving backwards in memory. Returns a pointer to the first digit of the
 // result. Does *not* NUL-terminate the number.
-#if !BUILDFLAG(IS_NACL)
+#if !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_ANDROID)
 char* PrependHexAddress(char* output, const void* address) {
   uintptr_t value = reinterpret_cast<uintptr_t>(address);
   static const char kHexChars[] = "0123456789ABCDEF";
@@ -143,16 +153,14 @@ char* PrependHexAddress(char* output, const void* address) {
   *output = '0';
   return output;
 }
-#endif  // !BUILDFLAG(IS_NACL)
+#endif  // !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_ANDROID)
 
-// Controls whether canceled tasks are removed from the front of the queue when
-// deciding when the next wake up should happen.
-// Note: An atomic is used here because some tests can initialize two different
-//       sequence managers on different threads (e.g. by using base::Thread).
-std::atomic_bool g_no_wake_ups_for_canceled_tasks{true};
+// Atomic to avoid TSAN flags when a test  tries to access the value before the
+// feature list is available.
+std::atomic_bool g_record_crash_keys = false;
 
 #if BUILDFLAG(IS_WIN)
-bool g_explicit_high_resolution_timer_win = false;
+bool g_explicit_high_resolution_timer_win = true;
 #endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace
@@ -220,7 +228,6 @@ SequenceManagerImpl::~SequenceManagerImpl() {
   controller_->RestoreDefaultTaskRunner();
 
   main_thread_only().active_queues.clear();
-  main_thread_only().queues_to_gracefully_shutdown.clear();
   main_thread_only().selector.SetTaskQueueSelectorObserver(nullptr);
 
   // In the case of an early startup exits or in some tests a NestingObserver
@@ -287,36 +294,18 @@ std::unique_ptr<SequenceManagerImpl> SequenceManagerImpl::CreateUnbound(
 
 // static
 void SequenceManagerImpl::InitializeFeatures() {
-  base::InitializeTaskLeeway();
-  ApplyNoWakeUpsForCanceledTasks();
   TaskQueueImpl::InitializeFeatures();
+  MessagePump::InitializeFeatures();
   ThreadControllerWithMessagePumpImpl::InitializeFeatures();
 #if BUILDFLAG(IS_WIN)
   g_explicit_high_resolution_timer_win =
       FeatureList::IsEnabled(kExplicitHighResolutionTimerWin);
 #endif  // BUILDFLAG(IS_WIN)
+
+  g_record_crash_keys.store(
+      FeatureList::IsEnabled(kRecordSequenceManagerCrashKeys),
+      std::memory_order_relaxed);
   TaskQueueSelector::InitializeFeatures();
-}
-
-// static
-void SequenceManagerImpl::ApplyNoWakeUpsForCanceledTasks() {
-  // Since kNoWakeUpsForCanceledTasks is not constexpr (forbidden for Features),
-  // it cannot be used to initialize |g_no_wake_ups_for_canceled_tasks| at
-  // compile time. At least DCHECK that its initial value matches the default
-  // value of the feature here.
-  DCHECK_EQ(
-      g_no_wake_ups_for_canceled_tasks.load(std::memory_order_relaxed),
-      kNoWakeUpsForCanceledTasks.default_state == FEATURE_ENABLED_BY_DEFAULT);
-  g_no_wake_ups_for_canceled_tasks.store(
-      FeatureList::IsEnabled(kNoWakeUpsForCanceledTasks),
-      std::memory_order_relaxed);
-}
-
-// static
-void SequenceManagerImpl::ResetNoWakeUpsForCanceledTasksForTesting() {
-  g_no_wake_ups_for_canceled_tasks.store(
-      kNoWakeUpsForCanceledTasks.default_state == FEATURE_ENABLED_BY_DEFAULT,
-      std::memory_order_relaxed);
 }
 
 void SequenceManagerImpl::BindToMessagePump(std::unique_ptr<MessagePump> pump) {
@@ -361,6 +350,9 @@ void SequenceManagerImpl::CompleteInitializationOnBoundThread() {
     DCHECK(!GetCurrent())
         << "Can't register a second SequenceManagerImpl on the same thread.";
     thread_local_sequence_manager = this;
+  }
+  for (internal::TaskQueueImpl* queue : main_thread_only().active_queues) {
+    queue->CompleteInitializationOnBoundThread();
   }
 }
 
@@ -407,12 +399,6 @@ void SequenceManagerImpl::SetObserver(Observer* observer) {
   main_thread_only().observer = observer;
 }
 
-void SequenceManagerImpl::ShutdownTaskQueueGracefully(
-    std::unique_ptr<internal::TaskQueueImpl> task_queue) {
-  main_thread_only().queues_to_gracefully_shutdown[task_queue.get()] =
-      std::move(task_queue);
-}
-
 void SequenceManagerImpl::UnregisterTaskQueueImpl(
     std::unique_ptr<internal::TaskQueueImpl> task_queue) {
   TRACE_EVENT1("sequence_manager", "SequenceManagerImpl::UnregisterTaskQueue",
@@ -441,7 +427,9 @@ SequenceManagerImpl::GetFlagToRequestReloadForEmptyQueue(
       &TaskQueueImpl::ReloadEmptyImmediateWorkQueue, Unretained(task_queue)));
 }
 
-void SequenceManagerImpl::ReloadEmptyWorkQueues() const {
+void SequenceManagerImpl::ReloadEmptyWorkQueues() {
+  work_tracker_.WillReloadImmediateWorkQueues();
+
   // There are two cases where a queue needs reloading.  First, it might be
   // completely empty and we've just posted a task (this method handles that
   // case). Secondly if the work queue becomes empty when calling
@@ -504,7 +492,7 @@ void SequenceManagerImpl::ScheduleWork() {
 }
 
 void SequenceManagerImpl::SetNextWakeUp(LazyNow* lazy_now,
-                                        absl::optional<WakeUp> wake_up) {
+                                        std::optional<WakeUp> wake_up) {
   auto next_wake_up = AdjustWakeUp(wake_up, lazy_now);
   if (next_wake_up && next_wake_up->is_immediate()) {
     ScheduleWork();
@@ -532,11 +520,20 @@ void SequenceManagerImpl::MaybeEmitTaskDetails(
 #endif  //  BUILDFLAG(ENABLE_BASE_TRACING)
 }
 
-absl::optional<SequenceManagerImpl::SelectedTask>
+void SequenceManagerImpl::SetRunTaskSynchronouslyAllowed(
+    bool can_run_tasks_synchronously) {
+  work_tracker_.SetRunTaskSynchronouslyAllowed(can_run_tasks_synchronously);
+}
+
+std::optional<SequenceManagerImpl::SelectedTask>
 SequenceManagerImpl::SelectNextTask(LazyNow& lazy_now,
                                     SelectTaskOption option) {
-  absl::optional<SelectedTask> selected_task =
+  std::optional<SelectedTask> selected_task =
       SelectNextTaskImpl(lazy_now, option);
+
+  if (selected_task.has_value()) {
+    work_tracker_.AssertHasWork();
+  }
 
   return selected_task;
 }
@@ -595,7 +592,7 @@ void SequenceManagerImpl::LogTaskDebugInfo(
 }
 #endif  // DCHECK_IS_ON() && !BUILDFLAG(IS_NACL)
 
-absl::optional<SequenceManagerImpl::SelectedTask>
+std::optional<SequenceManagerImpl::SelectedTask>
 SequenceManagerImpl::SelectNextTaskImpl(LazyNow& lazy_now,
                                         SelectTaskOption option) {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
@@ -622,7 +619,7 @@ SequenceManagerImpl::SelectNextTaskImpl(LazyNow& lazy_now,
                                             /* force_verbose */ false));
 
     if (!work_queue)
-      return absl::nullopt;
+      return std::nullopt;
 
     // If the head task was canceled, remove it and run the selector again.
     if (UNLIKELY(work_queue->RemoveAllCanceledTasksFromFront()))
@@ -669,6 +666,8 @@ SequenceManagerImpl::SelectNextTaskImpl(LazyNow& lazy_now,
 }
 
 void SequenceManagerImpl::DidRunTask(LazyNow& lazy_now) {
+  work_tracker_.AssertHasWork();
+
   ExecutingTask& executing_task =
       *main_thread_only().task_execution_stack.rbegin();
 
@@ -681,9 +680,6 @@ void SequenceManagerImpl::DidRunTask(LazyNow& lazy_now) {
 
 void SequenceManagerImpl::RemoveAllCanceledDelayedTasksFromFront(
     LazyNow* lazy_now) {
-  if (!g_no_wake_ups_for_canceled_tasks.load(std::memory_order_relaxed))
-    return;
-
   main_thread_only().wake_up_queue->RemoveAllCanceledDelayedTasksFromFront(
       lazy_now);
   main_thread_only()
@@ -691,13 +687,14 @@ void SequenceManagerImpl::RemoveAllCanceledDelayedTasksFromFront(
           lazy_now);
 }
 
-absl::optional<WakeUp> SequenceManagerImpl::GetPendingWakeUp(
+std::optional<WakeUp> SequenceManagerImpl::GetPendingWakeUp(
     LazyNow* lazy_now,
-    SelectTaskOption option) const {
+    SelectTaskOption option) {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
 
-  if (auto priority =
-          main_thread_only().selector.GetHighestPendingPriority(option)) {
+  RemoveAllCanceledDelayedTasksFromFront(lazy_now);
+
+  if (main_thread_only().selector.GetHighestPendingPriority(option)) {
     // If the selector has non-empty queues we trivially know there is immediate
     // work to be done. However we may want to yield to native work if it is
     // more important.
@@ -709,8 +706,7 @@ absl::optional<WakeUp> SequenceManagerImpl::GetPendingWakeUp(
   // do this always.
   ReloadEmptyWorkQueues();
 
-  if (auto priority =
-          main_thread_only().selector.GetHighestPendingPriority(option)) {
+  if (main_thread_only().selector.GetHighestPendingPriority(option)) {
     return WakeUp{};
   }
 
@@ -721,26 +717,26 @@ absl::optional<WakeUp> SequenceManagerImpl::GetPendingWakeUp(
   return AdjustWakeUp(GetNextDelayedWakeUpWithOption(option), lazy_now);
 }
 
-absl::optional<WakeUp> SequenceManagerImpl::GetNextDelayedWakeUp() const {
+std::optional<WakeUp> SequenceManagerImpl::GetNextDelayedWakeUp() const {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
   return main_thread_only().wake_up_queue->GetNextDelayedWakeUp();
 }
 
-absl::optional<WakeUp> SequenceManagerImpl::GetNextDelayedWakeUpWithOption(
+std::optional<WakeUp> SequenceManagerImpl::GetNextDelayedWakeUpWithOption(
     SelectTaskOption option) const {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
 
   if (option == SelectTaskOption::kSkipDelayedTask)
-    return absl::nullopt;
+    return std::nullopt;
   return GetNextDelayedWakeUp();
 }
 
-absl::optional<WakeUp> SequenceManagerImpl::AdjustWakeUp(
-    absl::optional<WakeUp> wake_up,
+std::optional<WakeUp> SequenceManagerImpl::AdjustWakeUp(
+    std::optional<WakeUp> wake_up,
     LazyNow* lazy_now) const {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
   if (!wake_up)
-    return absl::nullopt;
+    return std::nullopt;
   // Overdue work needs to be run immediately.
   if (lazy_now->Now() >= wake_up->earliest_time())
     return WakeUp{};
@@ -749,13 +745,13 @@ absl::optional<WakeUp> SequenceManagerImpl::AdjustWakeUp(
   // appearing idle and |time_domain| will decide what to do in
   // MaybeFastForwardToWakeUp().
   if (main_thread_only().time_domain)
-    return absl::nullopt;
+    return std::nullopt;
   return *wake_up;
 }
 
 void SequenceManagerImpl::MaybeAddLeewayToTask(Task& task) const {
   if (!main_thread_only().time_domain) {
-    task.leeway = GetTaskLeewayForCurrentThread();
+    task.leeway = MessagePump::GetLeewayForCurrentThread();
   }
 }
 
@@ -766,7 +762,7 @@ bool SequenceManagerImpl::HasPendingHighResolutionTasks() {
   // |non_waking_wake_up_queue|).
 #if BUILDFLAG(IS_WIN)
   if (g_explicit_high_resolution_timer_win) {
-    absl::optional<WakeUp> wake_up =
+    std::optional<WakeUp> wake_up =
         main_thread_only().wake_up_queue->GetNextDelayedWakeUp();
     if (!wake_up)
       return false;
@@ -775,7 +771,7 @@ bool SequenceManagerImpl::HasPendingHighResolutionTasks() {
     // way, we don't need to activate the high resolution timer for precise
     // tasks that will run in more than 16ms if there are non precise tasks in
     // front of them.
-    DCHECK_GE(GetDefaultTaskLeeway(),
+    DCHECK_GE(MessagePump::GetLeewayIgnoringThreadOverride(),
               Milliseconds(Time::kMinLowResolutionThresholdMs));
     return wake_up->delay_policy == subtle::DelayPolicy::kPrecise;
   }
@@ -783,7 +779,11 @@ bool SequenceManagerImpl::HasPendingHighResolutionTasks() {
   return main_thread_only().wake_up_queue->has_pending_high_resolution_tasks();
 }
 
-bool SequenceManagerImpl::OnSystemIdle() {
+void SequenceManagerImpl::OnBeginWork() {
+  work_tracker_.OnBeginWork();
+}
+
+bool SequenceManagerImpl::OnIdle() {
   bool have_work_to_do = false;
   if (main_thread_only().time_domain) {
     auto wakeup = main_thread_only().wake_up_queue->GetNextDelayedWakeUp();
@@ -792,10 +792,20 @@ bool SequenceManagerImpl::OnSystemIdle() {
   }
   if (!have_work_to_do) {
     MaybeReclaimMemory();
-    if (main_thread_only().on_next_idle_callback)
-      std::move(main_thread_only().on_next_idle_callback).Run();
+    main_thread_only().on_next_idle_callbacks.Notify();
+    if (main_thread_only().task_execution_stack.empty()) {
+      work_tracker_.OnIdle();
+    }
   }
   return have_work_to_do;
+}
+
+void SequenceManagerImpl::WillRequestReloadImmediateWorkQueue() {
+  work_tracker_.WillRequestReloadImmediateWorkQueue();
+}
+
+SyncWorkAuthorization SequenceManagerImpl::TryAcquireSyncWorkAuthorization() {
+  return work_tracker_.TryAcquireSyncWorkAuthorization();
 }
 
 void SequenceManagerImpl::WillQueueTask(Task* pending_task) {
@@ -826,7 +836,9 @@ void SequenceManagerImpl::NotifyWillProcessTask(ExecutingTask* executing_task,
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("sequence_manager"),
                "SequenceManagerImpl::NotifyWillProcessTaskObservers");
 
-  RecordCrashKeys(executing_task->pending_task);
+  if (g_record_crash_keys.load(std::memory_order_relaxed)) {
+    RecordCrashKeys(executing_task->pending_task);
+  }
 
   if (executing_task->task_queue->GetQuiescenceMonitored())
     main_thread_only().task_was_run_on_quiescence_monitored_queue = true;
@@ -943,11 +955,6 @@ void SequenceManagerImpl::SetWorkBatchSize(int work_batch_size) {
   controller_->SetWorkBatchSize(work_batch_size);
 }
 
-void SequenceManagerImpl::SetTimerSlack(TimerSlack timer_slack) {
-  DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
-  controller_->SetTimerSlack(timer_slack);
-}
-
 void SequenceManagerImpl::AddTaskObserver(TaskObserver* task_observer) {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
   main_thread_only().task_observers.AddObserver(task_observer);
@@ -996,13 +1003,12 @@ Value::Dict SequenceManagerImpl::AsValueWithSelectorResult(
   TimeTicks now = NowTicks();
   Value::Dict state;
   Value::List active_queues;
-  for (auto* const queue : main_thread_only().active_queues)
+  for (internal::TaskQueueImpl* const queue :
+       main_thread_only().active_queues) {
     active_queues.Append(queue->AsValue(now, force_verbose));
+  }
   state.Set("active_queues", std::move(active_queues));
   Value::List shutdown_queues;
-  for (const auto& pair : main_thread_only().queues_to_gracefully_shutdown)
-    shutdown_queues.Append(pair.first->AsValue(now, force_verbose));
-  state.Set("queues_to_gracefully_shutdown", std::move(shutdown_queues));
   Value::List queues_to_delete;
   for (const auto& pair : main_thread_only().queues_to_delete)
     queues_to_delete.Append(pair.first->AsValue(now, force_verbose));
@@ -1030,6 +1036,10 @@ void SequenceManagerImpl::OnTaskQueueEnabled(internal::TaskQueueImpl* queue) {
     ScheduleWork();
 }
 
+void SequenceManagerImpl::OnWorkAvailable() {
+  work_tracker_.OnBeginWork();
+}
+
 void SequenceManagerImpl::MaybeReclaimMemory() {
   if (!main_thread_only().memory_reclaim_scheduled)
     return;
@@ -1047,36 +1057,13 @@ void SequenceManagerImpl::ReclaimMemory() {
   LazyNow lazy_now(main_thread_clock());
   for (auto it = main_thread_only().active_queues.begin();
        it != main_thread_only().active_queues.end();) {
-    auto* const queue = *it++;
-    ReclaimMemoryFromQueue(queue, &lazy_now);
-  }
-  for (auto it = main_thread_only().queues_to_gracefully_shutdown.begin();
-       it != main_thread_only().queues_to_gracefully_shutdown.end();) {
-    auto* const queue = it->first;
-    it++;
+    auto* const queue = (*it++).get();
     ReclaimMemoryFromQueue(queue, &lazy_now);
   }
 }
 
 void SequenceManagerImpl::CleanUpQueues() {
-  for (auto it = main_thread_only().queues_to_gracefully_shutdown.begin();
-       it != main_thread_only().queues_to_gracefully_shutdown.end();) {
-    if (it->first->IsEmpty()) {
-      UnregisterTaskQueueImpl(std::move(it->second));
-      main_thread_only().active_queues.erase(it->first);
-      main_thread_only().queues_to_gracefully_shutdown.erase(it++);
-    } else {
-      ++it;
-    }
-  }
   main_thread_only().queues_to_delete.clear();
-}
-
-void SequenceManagerImpl::RemoveAllCanceledTasksFromFrontOfWorkQueues() {
-  for (internal::TaskQueueImpl* queue : main_thread_only().active_queues) {
-    queue->delayed_work_queue()->RemoveAllCanceledTasksFromFront();
-    queue->immediate_work_queue()->RemoveAllCanceledTasksFromFront();
-  }
 }
 
 WeakPtr<SequenceManagerImpl> SequenceManagerImpl::GetWeakPtr() {
@@ -1110,11 +1097,12 @@ SequenceManagerImpl::GetMetricRecordingSettings() const {
   return metric_recording_settings_;
 }
 
-void SequenceManagerImpl::SetTaskExecutionAllowed(bool allowed) {
-  controller_->SetTaskExecutionAllowed(allowed);
+void SequenceManagerImpl::SetTaskExecutionAllowedInNativeNestedLoop(
+    bool allowed) {
+  controller_->SetTaskExecutionAllowedInNativeNestedLoop(allowed);
 }
 
-bool SequenceManagerImpl::IsTaskExecutionAllowed() const {
+bool SequenceManagerImpl::IsTaskExecutionAllowedInNativeNestedLoop() const {
   return controller_->IsTaskExecutionAllowed();
 }
 
@@ -1126,7 +1114,13 @@ void SequenceManagerImpl::AttachToMessagePump() {
 
 bool SequenceManagerImpl::IsIdleForTesting() {
   ReloadEmptyWorkQueues();
-  RemoveAllCanceledTasksFromFrontOfWorkQueues();
+
+  // Make sure that canceled tasks don't affect the return value.
+  for (internal::TaskQueueImpl* queue : main_thread_only().active_queues) {
+    queue->delayed_work_queue()->RemoveAllCanceledTasksFromFront();
+    queue->immediate_work_queue()->RemoveAllCanceledTasksFromFront();
+  }
+
   return !main_thread_only().selector.GetHighestPendingPriority().has_value();
 }
 
@@ -1143,9 +1137,9 @@ size_t SequenceManagerImpl::GetPendingTaskCountForTesting() const {
   return total;
 }
 
-scoped_refptr<TaskQueue> SequenceManagerImpl::CreateTaskQueue(
+TaskQueue::Handle SequenceManagerImpl::CreateTaskQueue(
     const TaskQueue::Spec& spec) {
-  return WrapRefCounted(new TaskQueue(CreateTaskQueueImpl(spec), spec));
+  return TaskQueue::Handle(CreateTaskQueueImpl(spec));
 }
 
 std::string SequenceManagerImpl::DescribeAllPendingTasks() const {
@@ -1171,10 +1165,10 @@ void SequenceManagerImpl::RemoveDestructionObserver(
   main_thread_only().destruction_observers.RemoveObserver(destruction_observer);
 }
 
-void SequenceManagerImpl::RegisterOnNextIdleCallback(
+CallbackListSubscription SequenceManagerImpl::RegisterOnNextIdleCallback(
     OnceClosure on_next_idle_callback) {
-  DCHECK(!main_thread_only().on_next_idle_callback || !on_next_idle_callback);
-  main_thread_only().on_next_idle_callback = std::move(on_next_idle_callback);
+  return main_thread_only().on_next_idle_callbacks.Add(
+      std::move(on_next_idle_callback));
 }
 
 void SequenceManagerImpl::SetTaskRunner(
@@ -1200,19 +1194,19 @@ bool SequenceManagerImpl::IsType(MessagePumpType type) const {
 
 void SequenceManagerImpl::EnableCrashKeys(const char* async_stack_crash_key) {
   DCHECK(!main_thread_only().async_stack_crash_key);
-#if !BUILDFLAG(IS_NACL)
+#if !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_ANDROID)
   main_thread_only().async_stack_crash_key = debug::AllocateCrashKeyString(
       async_stack_crash_key, debug::CrashKeySize::Size64);
   static_assert(sizeof(main_thread_only().async_stack_buffer) ==
                     static_cast<size_t>(debug::CrashKeySize::Size64),
                 "Async stack buffer size must match crash key size.");
-#endif  // BUILDFLAG(IS_NACL)
+#endif  // !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_ANDROID)
 }
 
 void SequenceManagerImpl::RecordCrashKeys(const PendingTask& pending_task) {
-#if !BUILDFLAG(IS_NACL)
+#if !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_ANDROID)
   // SetCrashKeyString is a no-op even if the crash key is null, but we'd still
-  // have construct the StringPiece that is passed in.
+  // have construct the std::string_view that is passed in.
   if (!main_thread_only().async_stack_crash_key)
     return;
 
@@ -1240,8 +1234,8 @@ void SequenceManagerImpl::RecordCrashKeys(const PendingTask& pending_task) {
   DCHECK_GE(pos, buffer);
   debug::SetCrashKeyString(
       main_thread_only().async_stack_crash_key,
-      StringPiece(pos, static_cast<size_t>(buffer_end - pos)));
-#endif  // BUILDFLAG(IS_NACL)
+      std::string_view(pos, static_cast<size_t>(buffer_end - pos)));
+#endif  // !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_ANDROID)
 }
 
 internal::TaskQueueImpl* SequenceManagerImpl::currently_executing_task_queue()

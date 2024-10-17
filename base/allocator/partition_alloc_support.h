@@ -8,14 +8,14 @@
 #include <map>
 #include <string>
 
-#include "base/allocator/partition_allocator/partition_alloc_buildflags.h"
-#include "base/allocator/partition_allocator/partition_alloc_config.h"
-#include "base/allocator/partition_allocator/thread_cache.h"
 #include "base/base_export.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
+#include "partition_alloc/partition_alloc_buildflags.h"
+#include "partition_alloc/partition_alloc_config.h"
+#include "partition_alloc/thread_cache.h"
 
 namespace base::allocator {
 
@@ -45,13 +45,9 @@ class BASE_EXPORT PartitionAllocSupport {
  public:
   struct BrpConfiguration {
     bool enable_brp = false;
-    bool enable_brp_zapping = false;
-    bool enable_brp_partition_memory_reclaimer = false;
-    bool split_main_partition = false;
-    bool use_dedicated_aligned_partition = false;
-    bool add_dummy_ref_count = false;
     bool process_affected_by_brp_flag = false;
   };
+
   // Reconfigure* functions re-configure PartitionAlloc. It is impossible to
   // configure PartitionAlloc before/at its initialization using information not
   // known at compile-time (e.g. process type, Finch), because by the time this
@@ -95,6 +91,13 @@ class BASE_EXPORT PartitionAllocSupport {
   static PartitionAllocSupport* Get();
 
   static BrpConfiguration GetBrpConfiguration(const std::string& process_type);
+
+  // Returns true if memory tagging should be enabled if available for the given
+  // process type. May be called multiple times per process.
+  static bool ShouldEnableMemoryTagging(const std::string& process_type);
+
+  // For calling from within third_party/blink/.
+  static bool ShouldEnableMemoryTaggingInRendererProcess();
 
  private:
   PartitionAllocSupport();

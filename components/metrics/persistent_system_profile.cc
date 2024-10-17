@@ -5,11 +5,12 @@
 #include "components/metrics/persistent_system_profile.h"
 
 #include <set>
+#include <vector>
 
 #include "base/atomicops.h"
 #include "base/bits.h"
 #include "base/containers/contains.h"
-#include "base/containers/cxx20_erase.h"
+#include "base/containers/span.h"
 #include "base/debug/crash_logging.h"
 #include "base/memory/singleton.h"
 #include "base/metrics/persistent_memory_allocator.h"
@@ -243,7 +244,8 @@ bool PersistentSystemProfile::RecordAllocator::ReadData(
   } else if (*type == kUnusedSpace) {
     *type = static_cast<RecordType>(header.as_parts.type);
   } else if (*type != header.as_parts.type) {
-    NOTREACHED();  // Continuation didn't match start of record.
+    DUMP_WILL_BE_NOTREACHED_NORETURN();  // Continuation didn't match start of
+                                         // record.
     *type = kUnusedSpace;
     record->clear();
     return false;
@@ -260,7 +262,7 @@ bool PersistentSystemProfile::RecordAllocator::ReadData(
                             alloc_size_);
 #endif  // !BUILDFLAG(IS_NACL)
 
-    NOTREACHED();  // Invalid header amount.
+    DUMP_WILL_BE_NOTREACHED_NORETURN();  // Invalid header amount.
     *type = kUnusedSpace;
     return true;  // Don't try again.
   }
@@ -294,7 +296,7 @@ void PersistentSystemProfile::DeregisterPersistentAllocator(
 
   // This would be more efficient with a std::map but it's not expected that
   // allocators will get deregistered with any frequency, if at all.
-  base::EraseIf(allocators_, [=](RecordAllocator& records) {
+  std::erase_if(allocators_, [=](RecordAllocator& records) {
     return records.allocator() == memory_allocator;
   });
 }
@@ -427,7 +429,8 @@ void PersistentSystemProfile::MergeUpdateRecords(
           }
         }
 
-        base::Pickle pickler(record.data(), record.size());
+        base::Pickle pickler =
+            base::Pickle::WithUnownedBuffer(base::as_byte_span(record));
         base::PickleIterator iter(pickler);
         base::StringPiece trial;
         base::StringPiece group;

@@ -53,8 +53,12 @@ cc_defaults {
     min_sdk_version: "30",
     include_dirs: [
         "external/cronet/buildtools/third_party/libc++/",
-        "external/cronet/buildtools/third_party/libc++/trunk/include",
-        "external/cronet/buildtools/third_party/libc++abi/trunk/include",
+        "external/cronet/third_party/libc++/src/include",
+        "external/cronet/third_party/libc++abi/src/include",
+    ],
+    static_libs: [
+        "cronet_aml_buildtools_third_party_libc___libc__",
+        "cronet_aml_buildtools_third_party_libc__abi_libc__abi"
     ],
 }
 
@@ -64,6 +68,8 @@ cc_defaults {
         "-fvisibility=hidden",
         "-DBORINGSSL_SHARED_LIBRARY",
         "-DBORINGSSL_ANDROID_SYSTEM",
+        // Chromium uses extensive harderning mode, so setting the same for boringssl.
+        "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE",
         "-DOPENSSL_SMALL",
         "-Werror",
         "-Wno-unused-parameter",
@@ -116,6 +122,7 @@ cc_object {
         // to help prevent
         // merge conflicts.
         fuzzer: false,
+        memtag_globals: false,
     },
     target: {
         android: {
@@ -161,6 +168,7 @@ cc_object {
         address: false,
         hwaddress: false,
         fuzzer: false,
+        memtag_globals: false,
     },
     target: {
         android: {
@@ -259,6 +267,19 @@ cc_library_shared {
         "libssl_sources",
     ],
     unique_host_soname: true,
+    shared_libs: ["libcrypto"],
+}
+
+cc_library_shared {
+    name: "libpki",
+    defaults: [
+        "boringssl_defaults",
+        "boringssl_flags",
+        "cronet_defaults",
+        "libpki_sources",
+    ],
+    unique_host_soname: true,
+    cflags: ["-D_BORINGSSL_LIBPKI_"],
     shared_libs: ["libcrypto"],
 }
 

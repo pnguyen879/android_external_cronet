@@ -304,8 +304,11 @@ class FuzzedMdnsSocket : public DatagramServerSocket {
   }
   void UseNonBlockingIO() override {}
   int SetDoNotFragment() override { return OK; }
+  int SetRecvTos() override { return OK; }
+  int SetTos(DiffServCodePoint dscp, EcnCodePoint ecn) override { return OK; }
   void SetMsgConfirm(bool confirm) override {}
   const NetLogWithSource& NetLog() const override { return net_log_; }
+  DscpAndEcn GetLastTos() const override { return {DSCP_DEFAULT, ECN_DEFAULT}; }
 
  private:
   void CompleteRecv(CompletionOnceCallback callback,
@@ -412,6 +415,7 @@ class FuzzedHostResolverManager : public HostResolverManager {
   // HostResolverManager implementation:
   int StartGloballyReachableCheck(const IPAddress& dest,
                                   const NetLogWithSource& net_log,
+                                  ClientSocketFactory* client_socket_factory,
                                   CompletionOnceCallback callback) override {
     int reachable_rv = is_globally_reachable_ ? OK : ERR_FAILED;
     if (start_globally_reachable_async_) {

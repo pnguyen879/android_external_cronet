@@ -25,14 +25,9 @@ class QuicDataReader;
 
 // A class for decoding the HTTP frames that are exchanged in an HTTP over QUIC
 // session.
-class QUIC_EXPORT_PRIVATE HttpDecoder {
+class QUICHE_EXPORT HttpDecoder {
  public:
-  struct QUIC_EXPORT_PRIVATE Options {
-    // Indicates that WEBTRANSPORT_STREAM should be parsed.
-    bool allow_web_transport_stream = false;
-  };
-
-  class QUIC_EXPORT_PRIVATE Visitor {
+  class QUICHE_EXPORT Visitor {
    public:
     virtual ~Visitor() {}
 
@@ -102,6 +97,20 @@ class QUIC_EXPORT_PRIVATE HttpDecoder {
     virtual void OnWebTransportStreamFrameType(
         QuicByteCount header_length, WebTransportSessionId session_id) = 0;
 
+    // Called when a METADATA frame has been received.
+    // |header_length| and |payload_length| are the length of the frame header
+    // and payload, respectively.
+    virtual bool OnMetadataFrameStart(QuicByteCount header_length,
+                                      QuicByteCount payload_length) = 0;
+
+    // Called when part of the payload of the METADATA frame has been read.  May
+    // be called multiple times for a single frame.  |payload| is guaranteed to
+    // be non-empty.
+    virtual bool OnMetadataFramePayload(absl::string_view payload) = 0;
+
+    // Called when the METADATA frame has been completely processed.
+    virtual bool OnMetadataFrameEnd() = 0;
+
     // Called when a frame of unknown type |frame_type| has been received.
     // Frame type might be reserved, Visitor must make sure to ignore.
     // |header_length| and |payload_length| are the length of the frame header
@@ -119,7 +128,6 @@ class QUIC_EXPORT_PRIVATE HttpDecoder {
 
   // |visitor| must be non-null, and must outlive HttpDecoder.
   explicit HttpDecoder(Visitor* visitor);
-  explicit HttpDecoder(Visitor* visitor, Options options);
 
   ~HttpDecoder();
 
@@ -145,6 +153,9 @@ class QUIC_EXPORT_PRIVATE HttpDecoder {
 
   // Returns true if input data processed so far ends on a frame boundary.
   bool AtFrameBoundary() const { return state_ == STATE_READING_FRAME_TYPE; }
+
+  // Indicates that WEBTRANSPORT_STREAM should be parsed.
+  void EnableWebTransportStreamParsing() { allow_web_transport_stream_ = true; }
 
   std::string DebugString() const;
 
@@ -271,6 +282,9 @@ class QUIC_EXPORT_PRIVATE HttpDecoder {
   std::array<char, sizeof(uint64_t)> length_buffer_;
   // Remaining unparsed type field data.
   std::array<char, sizeof(uint64_t)> type_buffer_;
+
+  // Latched value of --quic_enable_http3_metadata_decoding.
+  const bool enable_metadata_decoding_;
 };
 
 }  // namespace quic

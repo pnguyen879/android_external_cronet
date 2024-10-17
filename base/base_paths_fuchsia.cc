@@ -9,7 +9,7 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/fuchsia/file_utils.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/process/process.h"
 
@@ -23,8 +23,14 @@ bool PathProviderFuchsia(int key, FilePath* result) {
     case DIR_ASSETS:
       *result = base::FilePath(base::kPackageRootDirectoryPath);
       return true;
-    case DIR_SRC_TEST_DATA_ROOT:
+
+    // TODO(crbug.com/1459692): Align with other platforms and remove this
+    // specialization.
     case DIR_GEN_TEST_DATA_ROOT:
+      [[fallthrough]];
+
+    case DIR_SRC_TEST_DATA_ROOT:
+    case DIR_OUT_TEST_DATA_ROOT:
       // These are only used by tests.
       // Test binaries are added to the package root via GN deps.
       *result = base::FilePath(base::kPackageRootDirectoryPath);

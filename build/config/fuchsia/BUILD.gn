@@ -2,16 +2,15 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromecast_build.gni")
 import("//build/config/clang/clang.gni")
 import("//build/config/fuchsia/generate_runner_scripts.gni")
-import("//third_party/fuchsia-sdk/sdk/build/config/config.gni")
+import("//build/config/fuchsia/gn_configs.gni")
 
 assert(is_fuchsia)
 assert(!is_posix, "Fuchsia is not POSIX.")
 
 config("compiler") {
-  configs = [ "//third_party/fuchsia-sdk/sdk/build/config:compiler" ]
+  configs = [ "//third_party/fuchsia-gn-sdk/src/config:compiler" ]
 
   # TODO(https://crbug.com/706592): The stack defaults to 256k on Fuchsia (see
   # https://fuchsia.googlesource.com/zircon/+/master/system/private/zircon/stack.h#9),
@@ -30,7 +29,6 @@ group("deployment_resources") {
     "//build/fuchsia/",
     "//build/util/lib/",
     "//third_party/fuchsia-sdk/sdk/.build-id/",
-    "//third_party/fuchsia-sdk/sdk/bin/fuchsia-common.sh",
     "//third_party/fuchsia-sdk/sdk/meta/manifest.json",
     "//third_party/fuchsia-sdk/sdk/tools/${test_host_cpu}/ffx",
     "//third_party/fuchsia-sdk/sdk/tools/${test_host_cpu}/ffx-meta.json",
@@ -56,8 +54,9 @@ group("deployment_resources") {
 
   if (test_isolate_uses_emulator) {
     data += [
-      "//third_party/fuchsia-sdk/sdk/bin/device_launcher.version",
-      "//third_party/fuchsia-sdk/sdk/tools/${test_host_cpu}/fvdl",
+      "//third_party/fuchsia-sdk/sdk/tools/${test_host_cpu}/ffx_tools/ffx-emu",
+      "//third_party/fuchsia-sdk/sdk/tools/${test_host_cpu}/ffx_tools/ffx-emu.json",
+      "//third_party/fuchsia-sdk/sdk/tools/${test_host_cpu}/ffx_tools/ffx-emu-meta.json",
     ]
     if (test_host_cpu == "x64") {
       data += [
@@ -80,8 +79,7 @@ group("deployment_resources") {
 
 # Copy the loader to place it at the expected path in the final package.
 copy("sysroot_asan_libs") {
-  sources =
-      [ "${fuchsia_sdk}/arch/${target_cpu}/sysroot/dist/lib/asan/ld.so.1" ]
+  sources = [ "${fuchsia_arch_root}/sysroot/dist/lib/asan/ld.so.1" ]
   outputs = [ "${root_out_dir}/lib/asan/{{source_file_part}}" ]
 }
 
@@ -97,4 +95,11 @@ group("asan_runtime_library") {
     ":sysroot_asan_libs",
     ":sysroot_asan_runtime_libs",
   ]
+}
+
+# rustc gives the linker (clang++) "-pie" directives. clang++ complains on
+# Fuchsia that these don't make any sense. On Fuchsia alone, for Rust-linked
+# targets only, disable these warnings.
+config("rustc_no_pie_warning") {
+  ldflags = [ "-Wno-unused-command-line-argument" ]
 }

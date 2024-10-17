@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -16,7 +17,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 #include "quiche/quic/core/crypto/crypto_protocol.h"
 #include "quiche/quic/core/frames/quic_frame.h"
 #include "quiche/quic/core/frames/quic_padding_frame.h"
@@ -115,9 +115,9 @@ QuicPacketCreator::QuicPacketCreator(QuicConnectionId server_connection_id,
       debug_delegate_(nullptr),
       framer_(framer),
       random_(random),
-      send_version_in_packet_(framer->perspective() == Perspective::IS_CLIENT),
       have_diversification_nonce_(false),
       max_packet_length_(0),
+      next_max_packet_length_(0),
       server_connection_id_included_(CONNECTION_ID_PRESENT),
       packet_size_(0),
       server_connection_id_(server_connection_id),
@@ -156,8 +156,11 @@ bool QuicPacketCreator::CanSetMaxPacketLength() const {
 }
 
 void QuicPacketCreator::SetMaxPacketLength(QuicByteCount length) {
-  QUICHE_DCHECK(CanSetMaxPacketLength()) << ENDPOINT;
-
+  if (!CanSetMaxPacketLength()) {
+    // The new max packet length will be applied to the next packet.
+    next_max_packet_length_ = length;
+    return;
+  }
   // Avoid recomputing |max_plaintext_size_| if the length does not actually
   // change.
   if (length == max_packet_length_) {
@@ -213,19 +216,6 @@ void QuicPacketCreator::SetSoftMaxPacketLength(QuicByteCount length) {
   latched_hard_max_packet_length_ = max_packet_length_;
   max_packet_length_ = length;
   max_plaintext_size_ = framer_->GetMaxPlaintextSize(length);
-}
-
-// Stops serializing version of the protocol in packets sent after this call.
-// A packet that is already open might send kQuicVersionSize bytes less than the
-// maximum packet size if we stop sending version before it is serialized.
-void QuicPacketCreator::StopSendingVersion() {
-  QUICHE_DCHECK(send_version_in_packet_) << ENDPOINT;
-  QUICHE_DCHECK(!version().HasIetfInvariantHeader()) << ENDPOINT;
-  send_version_in_packet_ = false;
-  if (packet_size_ > 0) {
-    QUICHE_DCHECK_LT(kQuicVersionSize, packet_size_) << ENDPOINT;
-    packet_size_ -= kQuicVersionSize;
-  }
 }
 
 void QuicPacketCreator::SetDiversificationNonce(
@@ -366,8 +356,8 @@ bool QuicPacketCreator::HasRoomForStreamFrame(QuicStreamId id,
 }
 
 bool QuicPacketCreator::HasRoomForMessageFrame(QuicByteCount length) {
-  const size_t message_frame_size = QuicFramer::GetMessageFrameSize(
-      framer_->transport_version(), /*last_frame_in_packet=*/true, length);
+  const size_t message_frame_size =
+      QuicFramer::GetMessageFrameSize(/*last_frame_in_packet=*/true, length);
   if (static_cast<QuicByteCount>(message_frame_size) >
       max_datagram_frame_size_) {
     return false;
@@ -487,6 +477,11 @@ void QuicPacketCreator::OnSerializedPacket() {
   ClearPacket();
   RemoveSoftMaxPacketLength();
   delegate_->OnSerializedPacket(std::move(packet));
+  if (next_max_packet_length_ != 0) {
+    QUICHE_DCHECK(CanSetMaxPacketLength()) << ENDPOINT;
+    SetMaxPacketLength(next_max_packet_length_);
+    next_max_packet_length_ = 0;
+  }
 }
 
 void QuicPacketCreator::ClearPacket() {
@@ -566,10 +561,10 @@ size_t QuicPacketCreator::ReserializeInitialPacketInCoalescedPacket(
       !packet_.initial_header.has_value()) {
     QUIC_BUG(missing initial packet header)
         << "initial serialized packet does not have header populated";
-  } else if (packet.initial_header.value() != packet_.initial_header.value()) {
+  } else if (*packet.initial_header != *packet_.initial_header) {
     QUIC_BUG(initial packet header changed before reserialization)
-        << ENDPOINT << "original header: " << packet.initial_header.value()
-        << ", new header: " << packet_.initial_header.value();
+        << ENDPOINT << "original header: " << *packet.initial_header
+        << ", new header: " << *packet_.initial_header;
   }
   const size_t encrypted_length = packet_.encrypted_length;
   // Clear frames in packet_. No need to DeleteFrames since frames are owned by
@@ -609,7 +604,7 @@ void QuicPacketCreator::CreateAndSerializeStreamFrame(
 
   QuicDataWriter writer(kMaxOutgoingPacketSize, encrypted_buffer);
   size_t length_field_offset = 0;
-  if (!framer_->AppendPacketHeader(header, &writer, &length_field_offset)) {
+  if (!framer_->AppendIetfPacketHeader(header, &writer, &length_field_offset)) {
     QUIC_BUG(quic_bug_10752_9) << ENDPOINT << "AppendPacketHeader failed";
     return;
   }
@@ -770,7 +765,7 @@ bool QuicPacketCreator::AddPaddedSavedFrame(
   return false;
 }
 
-absl::optional<size_t>
+std::optional<size_t>
 QuicPacketCreator::MaybeBuildDataPacketWithChaosProtection(
     const QuicPacketHeader& header, char* buffer) {
   if (!GetQuicFlag(quic_enable_chaos_protection) ||
@@ -785,13 +780,13 @@ QuicPacketCreator::MaybeBuildDataPacketWithChaosProtection(
       // Chaos protection relies on the framer using a crypto data producer,
       // which is always the case in practice.
       framer_->data_producer() == nullptr) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   const QuicCryptoFrame& crypto_frame = *queued_frames_[0].crypto_frame;
   if (packet_.encryption_level != crypto_frame.level) {
     QUIC_BUG(chaos frame level)
         << ENDPOINT << packet_.encryption_level << " != " << crypto_frame.level;
-    return absl::nullopt;
+    return std::nullopt;
   }
   QuicChaosProtector chaos_protector(
       crypto_frame, queued_frames_[1].padding_frame.num_padding_bytes,
@@ -857,10 +852,10 @@ bool QuicPacketCreator::SerializePacket(QuicOwnedPacketBuffer encrypted_buffer,
   // packet sizes are properly used.
 
   size_t length;
-  absl::optional<size_t> length_with_chaos_protection =
+  std::optional<size_t> length_with_chaos_protection =
       MaybeBuildDataPacketWithChaosProtection(header, encrypted_buffer.buffer);
   if (length_with_chaos_protection.has_value()) {
-    length = length_with_chaos_protection.value();
+    length = *length_with_chaos_protection;
   } else {
     length = framer_->BuildDataPacket(header, queued_frames_,
                                       encrypted_buffer.buffer, packet_size_,
@@ -1296,7 +1291,7 @@ bool QuicPacketCreator::ConsumeRetransmittableControlFrame(
       << "Adding a control frame with no control frame id: " << frame;
   QUICHE_DCHECK(QuicUtils::IsRetransmittableFrame(frame.type))
       << ENDPOINT << frame;
-  MaybeBundleAckOpportunistically();
+  MaybeBundleOpportunistically();
   if (HasPendingFrames()) {
     if (AddFrame(frame, next_transmission_type_)) {
       // There is pending frames and current frame fits.
@@ -1317,6 +1312,19 @@ bool QuicPacketCreator::ConsumeRetransmittableControlFrame(
   return success;
 }
 
+void QuicPacketCreator::MaybeBundleOpportunistically() {
+  if (!GetQuicRestartFlag(quic_opport_bundle_qpack_decoder_data4)) {
+    delegate_->MaybeBundleOpportunistically(next_transmission_type_);
+    return;
+  }
+
+  // delegate_->MaybeBundleOpportunistically() may change
+  // next_transmission_type_ for the bundled data.
+  const TransmissionType next_transmission_type = next_transmission_type_;
+  delegate_->MaybeBundleOpportunistically(next_transmission_type_);
+  next_transmission_type_ = next_transmission_type;
+}
+
 QuicConsumedData QuicPacketCreator::ConsumeData(QuicStreamId id,
                                                 size_t write_length,
                                                 QuicStreamOffset offset,
@@ -1326,7 +1334,36 @@ QuicConsumedData QuicPacketCreator::ConsumeData(QuicStreamId id,
       << "Packet flusher is not attached when "
          "generator tries to write stream data.";
   bool has_handshake = QuicUtils::IsCryptoStreamId(transport_version(), id);
-  MaybeBundleAckOpportunistically();
+  const TransmissionType next_transmission_type = next_transmission_type_;
+  MaybeBundleOpportunistically();
+  // TODO(wub): Remove this QUIC_BUG when deprecating
+  // quic_opport_bundle_qpack_decoder_data4.
+  QUIC_BUG_IF(quic_packet_creator_change_transmission_type,
+              next_transmission_type != next_transmission_type_)
+      << ENDPOINT
+      << "Transmission type changed by bundled data. old transmission type:"
+      << next_transmission_type
+      << ", new transmission type:" << next_transmission_type_;
+  // If the data being consumed is subject to flow control, check the flow
+  // control send window to see if |write_length| exceeds the send window after
+  // bundling opportunistic data, if so, reduce |write_length| to the send
+  // window size.
+  // The data being consumed is subject to flow control iff
+  // - It is not a retransmission. We check next_transmission_type_ for that.
+  // - And it's not handshake data. This is always true for ConsumeData because
+  //   the function is not called for handshake data.
+  if (GetQuicRestartFlag(quic_opport_bundle_qpack_decoder_data4) &&
+      next_transmission_type_ == NOT_RETRANSMISSION) {
+    if (QuicByteCount send_window = delegate_->GetFlowControlSendWindowSize(id);
+        write_length > send_window) {
+      QUIC_RESTART_FLAG_COUNT_N(quic_opport_bundle_qpack_decoder_data4, 4, 4);
+      QUIC_DLOG(INFO) << ENDPOINT
+                      << "After bundled data, reducing (old) write_length:"
+                      << write_length << "to (new) send_window:" << send_window;
+      write_length = send_window;
+      state = NO_FIN;
+    }
+  }
   bool fin = state != NO_FIN;
   QUIC_BUG_IF(quic_bug_12398_17, has_handshake && fin)
       << ENDPOINT << "Handshake packets should never send a fin";
@@ -1345,7 +1382,10 @@ QuicConsumedData QuicPacketCreator::ConsumeData(QuicStreamId id,
 
   if (!fin && (write_length == 0)) {
     QUIC_BUG(quic_bug_10752_22)
-        << ENDPOINT << "Attempt to consume empty data without FIN.";
+        << ENDPOINT
+        << "Attempt to consume empty data without FIN. old transmission type:"
+        << next_transmission_type
+        << ", new transmission type:" << next_transmission_type_;
     return QuicConsumedData(0, false);
   }
   // We determine if we can enter the fast path before executing
@@ -1453,7 +1493,7 @@ size_t QuicPacketCreator::ConsumeCryptoData(EncryptionLevel level,
       << ENDPOINT
       << "Packet flusher is not attached when "
          "generator tries to write crypto data.";
-  MaybeBundleAckOpportunistically();
+  MaybeBundleOpportunistically();
   // To make reasoning about crypto frames easier, we don't combine them with
   // other retransmittable frames in a single packet.
   // TODO(nharper): Once we have separate packet number spaces, everything
@@ -1525,29 +1565,13 @@ void QuicPacketCreator::GenerateMtuDiscoveryPacket(QuicByteCount target_mtu) {
   SetMaxPacketLength(current_mtu);
 }
 
-void QuicPacketCreator::MaybeBundleAckOpportunistically() {
-  if (has_ack()) {
-    // Ack already queued, nothing to do.
-    return;
-  }
-  if (!delegate_->ShouldGeneratePacket(NO_RETRANSMITTABLE_DATA,
-                                       NOT_HANDSHAKE)) {
-    return;
-  }
-  const bool flushed =
-      FlushAckFrame(delegate_->MaybeBundleAckOpportunistically());
-  QUIC_BUG_IF(quic_bug_10752_29, !flushed)
-      << ENDPOINT << "Failed to flush ACK frame. encryption_level:"
-      << packet_.encryption_level;
-}
-
 bool QuicPacketCreator::FlushAckFrame(const QuicFrames& frames) {
   QUIC_BUG_IF(quic_bug_10752_30, !flusher_attached_)
       << ENDPOINT
       << "Packet flusher is not attached when "
          "generator tries to send ACK frame.";
-  // MaybeBundleAckOpportunistically could be called nestedly when sending a
-  // control frame causing another control frame to be sent.
+  // delegate_->MaybeBundleOpportunistically could be called nestedly when
+  // sending a control frame causing another control frame to be sent.
   QUIC_BUG_IF(quic_bug_12398_18, !frames.empty() && has_ack())
       << ENDPOINT << "Trying to flush " << quiche::PrintElements(frames)
       << " when there is ACK queued";
@@ -1629,7 +1653,7 @@ MessageStatus QuicPacketCreator::AddMessageFrame(
       << ENDPOINT
       << "Packet flusher is not attached when "
          "generator tries to add message frame.";
-  MaybeBundleAckOpportunistically();
+  MaybeBundleOpportunistically();
   const QuicByteCount message_length = MemSliceSpanTotalSize(message);
   if (message_length > GetCurrentLargestMessagePayload()) {
     return MESSAGE_STATUS_TOO_LARGE;
@@ -1968,10 +1992,7 @@ bool QuicPacketCreator::IncludeNonceInPublicHeader() const {
 }
 
 bool QuicPacketCreator::IncludeVersionInHeader() const {
-  if (version().HasIetfInvariantHeader()) {
-    return packet_.encryption_level < ENCRYPTION_FORWARD_SECURE;
-  }
-  return send_version_in_packet_;
+  return packet_.encryption_level < ENCRYPTION_FORWARD_SECURE;
 }
 
 void QuicPacketCreator::AddPendingPadding(QuicByteCount size) {
@@ -2016,9 +2037,6 @@ void QuicPacketCreator::SetClientConnectionId(
 }
 
 QuicPacketLength QuicPacketCreator::GetCurrentLargestMessagePayload() const {
-  if (!VersionSupportsMessageFrames(framer_->transport_version())) {
-    return 0;
-  }
   const size_t packet_header_size = GetPacketHeaderSize(
       framer_->transport_version(), GetDestinationConnectionIdLength(),
       GetSourceConnectionIdLength(), IncludeVersionInHeader(),
@@ -2040,9 +2058,6 @@ QuicPacketLength QuicPacketCreator::GetCurrentLargestMessagePayload() const {
 }
 
 QuicPacketLength QuicPacketCreator::GetGuaranteedLargestMessagePayload() const {
-  if (!VersionSupportsMessageFrames(framer_->transport_version())) {
-    return 0;
-  }
   // QUIC Crypto server packets may include a diversification nonce.
   const bool may_include_nonce =
       framer_->version().handshake_protocol == PROTOCOL_QUIC_CRYPTO &&
@@ -2097,8 +2112,7 @@ bool QuicPacketCreator::AttemptingToSendUnencryptedStreamData() {
 }
 
 bool QuicPacketCreator::HasIetfLongHeader() const {
-  return version().HasIetfInvariantHeader() &&
-         packet_.encryption_level < ENCRYPTION_FORWARD_SECURE;
+  return packet_.encryption_level < ENCRYPTION_FORWARD_SECURE;
 }
 
 // static
@@ -2161,25 +2175,18 @@ void QuicPacketCreator::SetDefaultPeerAddress(QuicSocketAddress address) {
 
 QuicPacketCreator::ScopedPeerAddressContext::ScopedPeerAddressContext(
     QuicPacketCreator* creator, QuicSocketAddress address,
-    bool update_connection_id)
-    : ScopedPeerAddressContext(creator, address, EmptyQuicConnectionId(),
-                               EmptyQuicConnectionId(), update_connection_id) {}
-
-QuicPacketCreator::ScopedPeerAddressContext::ScopedPeerAddressContext(
-    QuicPacketCreator* creator, QuicSocketAddress address,
     const QuicConnectionId& client_connection_id,
-    const QuicConnectionId& server_connection_id, bool update_connection_id)
+    const QuicConnectionId& server_connection_id)
     : creator_(creator),
       old_peer_address_(creator_->packet_.peer_address),
       old_client_connection_id_(creator_->GetClientConnectionId()),
-      old_server_connection_id_(creator_->GetServerConnectionId()),
-      update_connection_id_(update_connection_id) {
+      old_server_connection_id_(creator_->GetServerConnectionId()) {
   QUIC_BUG_IF(quic_bug_12398_19, !old_peer_address_.IsInitialized())
       << ENDPOINT2
       << "Context is used before serialized packet's peer address is "
          "initialized.";
   creator_->SetDefaultPeerAddress(address);
-  if (update_connection_id_) {
+  if (creator_->version().HasIetfQuicFrames()) {
     // Flush current packet if connection ID length changes.
     if (address == old_peer_address_ &&
         ((client_connection_id.length() !=
@@ -2195,7 +2202,7 @@ QuicPacketCreator::ScopedPeerAddressContext::ScopedPeerAddressContext(
 
 QuicPacketCreator::ScopedPeerAddressContext::~ScopedPeerAddressContext() {
   creator_->SetDefaultPeerAddress(old_peer_address_);
-  if (update_connection_id_) {
+  if (creator_->version().HasIetfQuicFrames()) {
     creator_->SetClientConnectionId(old_client_connection_id_);
     creator_->SetServerConnectionId(old_server_connection_id_);
   }

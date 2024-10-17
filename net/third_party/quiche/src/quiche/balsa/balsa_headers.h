@@ -12,6 +12,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <utility>
@@ -23,13 +24,13 @@
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 #include "quiche/balsa/balsa_enums.h"
 #include "quiche/balsa/header_api.h"
 #include "quiche/balsa/standard_header_map.h"
 #include "quiche/common/platform/api/quiche_bug_tracker.h"
 #include "quiche/common/platform/api/quiche_export.h"
 #include "quiche/common/platform/api/quiche_logging.h"
+#include "quiche/common/quiche_callbacks.h"
 
 namespace gfe2 {
 class Http2HeaderValidator;
@@ -834,9 +835,10 @@ class QUICHE_EXPORT BalsaHeaders : public HeaderApi {
   void DumpToString(std::string* str) const;
   std::string DebugString() const override;
 
-  bool ForEachHeader(std::function<bool(const absl::string_view key,
-                                        const absl::string_view value)>
-                         fn) const override;
+  bool ForEachHeader(
+      quiche::UnretainedCallback<bool(const absl::string_view key,
+                                      const absl::string_view value)>
+          fn) const override;
 
   void DumpToPrefixedString(const char* spaces, std::string* str) const;
 
@@ -1007,8 +1009,8 @@ class QUICHE_EXPORT BalsaHeaders : public HeaderApi {
   absl::string_view Authority() const override;
   void ReplaceOrAppendAuthority(absl::string_view value) override;
   void RemoveAuthority() override;
-  void ApplyToCookie(
-      std::function<void(absl::string_view cookie)> f) const override;
+  void ApplyToCookie(quiche::UnretainedCallback<void(absl::string_view cookie)>
+                         f) const override;
 
   void set_enforce_header_policy(bool enforce) override {
     enforce_header_policy_ = enforce;
@@ -1258,13 +1260,12 @@ class QUICHE_EXPORT BalsaHeaders::iterator_base
                          absl::string_view(stream_begin + line.value_begin_idx,
                                            line.ValuesLength()));
     }
-    return value_.value();
+    return *value_;
   }
 
   const BalsaHeaders* headers_;
   HeaderLines::size_type idx_;
-  mutable absl::optional<std::pair<absl::string_view, absl::string_view>>
-      value_;
+  mutable std::optional<std::pair<absl::string_view, absl::string_view>> value_;
 };
 
 // A const iterator for all the header lines.

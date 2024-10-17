@@ -7,8 +7,9 @@
 #include <stdlib.h>
 #include <cinttypes>
 
-#include "base/allocator/buildflags.h"
-#include "base/allocator/partition_allocator/shim/allocator_shim.h"
+#include "base/allocator/dispatcher/dispatcher.h"
+#include "base/allocator/dispatcher/notification_data.h"
+#include "base/allocator/dispatcher/subsystem.h"
 #include "base/debug/alias.h"
 #include "base/memory/raw_ptr.h"
 #include "base/rand_util.h"
@@ -16,17 +17,16 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/simple_thread.h"
 #include "build/build_config.h"
+#include "partition_alloc/shim/allocator_shim.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if BUILDFLAG(USE_ALLOCATION_EVENT_DISPATCHER)
-#include "base/allocator/dispatcher/dispatcher.h"
-#endif
 
 namespace base {
 
 using ScopedSuppressRandomnessForTesting =
     PoissonAllocationSampler::ScopedSuppressRandomnessForTesting;
+using base::allocator::dispatcher::AllocationNotificationData;
 using base::allocator::dispatcher::AllocationSubsystem;
+using base::allocator::dispatcher::FreeNotificationData;
 
 class SamplingHeapProfilerTest : public ::testing::Test {
  public:
@@ -41,16 +41,12 @@ class SamplingHeapProfilerTest : public ::testing::Test {
     ASSERT_FALSE(PoissonAllocationSampler::ScopedMuteThreadSamples::IsMuted());
     ASSERT_FALSE(ScopedSuppressRandomnessForTesting::IsSuppressed());
 
-#if BUILDFLAG(USE_ALLOCATION_EVENT_DISPATCHER)
     allocator::dispatcher::Dispatcher::GetInstance().InitializeForTesting(
         PoissonAllocationSampler::Get());
-#endif
   }
 
   void TearDown() override {
-#if BUILDFLAG(USE_ALLOCATION_EVENT_DISPATCHER)
     allocator::dispatcher::Dispatcher::GetInstance().ResetForTesting();
-#endif
   }
 
   size_t GetNextSample(size_t mean_interval) {
@@ -95,7 +91,7 @@ class SamplesCollector : public PoissonAllocationSampler::SamplesObserver {
 
  private:
   size_t watch_size_;
-  raw_ptr<void> sample_address_ = nullptr;
+  raw_ptr<void, DanglingUntriaged> sample_address_ = nullptr;
 };
 
 TEST_F(SamplingHeapProfilerTest, SampleObserver) {
@@ -268,13 +264,15 @@ TEST_F(SamplingHeapProfilerTest, MAYBE_MANUAL_SamplerMicroBenchmark) {
 
   base::TimeTicks t0 = base::TimeTicks::Now();
   for (int i = 1; i <= kNumAllocations; ++i) {
-    sampler->OnAllocation(reinterpret_cast<void*>(static_cast<intptr_t>(i)),
-                          allocation_size, AllocationSubsystem::kAllocatorShim,
-                          nullptr);
+    sampler->OnAllocation(AllocationNotificationData(
+        reinterpret_cast<void*>(static_cast<intptr_t>(i)), allocation_size,
+        nullptr, AllocationSubsystem::kAllocatorShim));
   }
   base::TimeTicks t1 = base::TimeTicks::Now();
   for (int i = 1; i <= kNumAllocations; ++i)
-    sampler->OnFree(reinterpret_cast<void*>(static_cast<intptr_t>(i)));
+    sampler->OnFree(
+        FreeNotificationData(reinterpret_cast<void*>(static_cast<intptr_t>(i)),
+                             AllocationSubsystem::kAllocatorShim));
   base::TimeTicks t2 = base::TimeTicks::Now();
 
   printf(
@@ -358,9 +356,10 @@ TEST_F(SamplingHeapProfilerTest, HookedAllocatorMuted) {
     // Manual allocations should be captured.
     sampler->AddSamplesObserver(&collector);
     void* const kAddress = reinterpret_cast<void*>(0x1234);
-    sampler->OnAllocation(kAddress, 10000,
-                          AllocationSubsystem::kManualForTesting, nullptr);
-    sampler->OnFree(kAddress);
+    sampler->OnAllocation(AllocationNotificationData(
+        kAddress, 10000, nullptr, AllocationSubsystem::kManualForTesting));
+    sampler->OnFree(
+        FreeNotificationData(kAddress, AllocationSubsystem::kManualForTesting));
     sampler->RemoveSamplesObserver(&collector);
     EXPECT_TRUE(collector.sample_added);
     EXPECT_TRUE(collector.sample_removed);

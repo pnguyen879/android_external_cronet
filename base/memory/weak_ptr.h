@@ -81,13 +81,23 @@
 #include "base/dcheck_is_on.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/safe_ref_traits.h"
 #include "base/sequence_checker.h"
 #include "base/synchronization/atomic_flag.h"
 
+namespace performance_manager {
+class FrameNodeImpl;
+class PageNodeImpl;
+class ProcessNodeImpl;
+class WorkerNodeImpl;
+}  // namespace performance_manager
+
 namespace base {
 
-template <typename T>
-class SafeRef;
+namespace sequence_manager::internal {
+class TaskQueueImpl;
+}
+
 template <typename T> class SupportsWeakPtr;
 template <typename T> class WeakPtr;
 
@@ -110,6 +120,7 @@ class BASE_EXPORT TRIVIAL_ABI WeakReference {
 
 #if DCHECK_IS_ON()
     void DetachFromSequence();
+    void BindToCurrentSequence();
 #endif
 
    private:
@@ -159,6 +170,7 @@ class BASE_EXPORT WeakReferenceOwner {
   bool HasRefs() const { return !flag_->HasOneRef(); }
 
   void Invalidate();
+  void BindToCurrentSequence();
 
  private:
   scoped_refptr<WeakReference::Flag> flag_;
@@ -170,29 +182,36 @@ class BASE_EXPORT WeakReferenceOwner {
 class SupportsWeakPtrBase {
  public:
   // A safe static downcast of a WeakPtr<Base> to WeakPtr<Derived>. This
-  // conversion will only compile if there is exists a Base which inherits
-  // from SupportsWeakPtr<Base>. See base::AsWeakPtr() below for a helper
-  // function that makes calling this easier.
+  // conversion will only compile if Derived singly inherits from
+  // SupportsWeakPtr<Base>. See base::AsWeakPtr() below for a helper function
+  // that makes calling this easier.
   //
   // Precondition: t != nullptr
   template<typename Derived>
   static WeakPtr<Derived> StaticAsWeakPtr(Derived* t) {
-    static_assert(
-        std::is_base_of<internal::SupportsWeakPtrBase, Derived>::value,
-        "AsWeakPtr argument must inherit from SupportsWeakPtr");
-    return AsWeakPtrImpl<Derived>(t);
-  }
-
- private:
-  // This template function uses type inference to find a Base of Derived
-  // which is an instance of SupportsWeakPtr<Base>. We can then safely
-  // static_cast the Base* to a Derived*.
-  template <typename Derived, typename Base>
-  static WeakPtr<Derived> AsWeakPtrImpl(SupportsWeakPtr<Base>* t) {
-    WeakPtr<Base> weak = t->AsWeakPtr();
+    static_assert(std::is_base_of_v<internal::SupportsWeakPtrBase, Derived>,
+                  "AsWeakPtr argument must inherit from SupportsWeakPtr");
+    using Base = typename decltype(ExtractSinglyInheritedBase(t))::Base;
+    // Ensure SupportsWeakPtr<Base>::AsWeakPtr() is called even if the subclass
+    // hides or overloads it.
+    WeakPtr<Base> weak = static_cast<SupportsWeakPtr<Base>*>(t)->AsWeakPtr();
     return WeakPtr<Derived>(weak.CloneWeakReference(),
                             static_cast<Derived*>(weak.ptr_));
   }
+
+ private:
+  // This class can only be instantiated if the constructor argument inherits
+  // from SupportsWeakPtr<T> in exactly one way.
+  template <typename T>
+  struct ExtractSinglyInheritedBase;
+  template <typename T>
+  struct ExtractSinglyInheritedBase<SupportsWeakPtr<T>> {
+    using Base = T;
+    explicit ExtractSinglyInheritedBase(SupportsWeakPtr<T>*);
+  };
+  template <typename T>
+  ExtractSinglyInheritedBase(SupportsWeakPtr<T>*)
+      -> ExtractSinglyInheritedBase<SupportsWeakPtr<T>>;
 };
 
 // Forward declaration from safe_ptr.h.
@@ -226,12 +245,12 @@ class TRIVIAL_ABI WeakPtr {
 
   // Allow conversion from U to T provided U "is a" T. Note that this
   // is separate from the (implicit) copy and move constructors.
-  template <typename U,
-            typename = std::enable_if_t<std::is_convertible_v<U*, T*>>>
+  template <typename U>
+    requires(std::convertible_to<U*, T*>)
   // NOLINTNEXTLINE(google-explicit-constructor)
   WeakPtr(const WeakPtr<U>& other) : ref_(other.ref_), ptr_(other.ptr_) {}
-  template <typename U,
-            typename = std::enable_if_t<std::is_convertible_v<U*, T*>>>
+  template <typename U>
+    requires(std::convertible_to<U*, T*>)
   // NOLINTNEXTLINE(google-explicit-constructor)
   WeakPtr& operator=(const WeakPtr<U>& other) {
     ref_ = other.ref_;
@@ -239,13 +258,13 @@ class TRIVIAL_ABI WeakPtr {
     return *this;
   }
 
-  template <typename U,
-            typename = std::enable_if_t<std::is_convertible_v<U*, T*>>>
+  template <typename U>
+    requires(std::convertible_to<U*, T*>)
   // NOLINTNEXTLINE(google-explicit-constructor)
   WeakPtr(WeakPtr<U>&& other)
       : ref_(std::move(other.ref_)), ptr_(std::move(other.ptr_)) {}
-  template <typename U,
-            typename = std::enable_if_t<std::is_convertible_v<U*, T*>>>
+  template <typename U>
+    requires(std::convertible_to<U*, T*>)
   // NOLINTNEXTLINE(google-explicit-constructor)
   WeakPtr& operator=(WeakPtr<U>&& other) {
     ref_ = std::move(other.ref_);
@@ -281,6 +300,16 @@ class TRIVIAL_ABI WeakPtr {
     ptr_ = nullptr;
   }
 
+  // Do not use this method. Almost all callers should instead use operator
+  // bool().
+  //
+  // There are a few rare cases where the caller intentionally needs to check
+  // validity of a base::WeakPtr on a sequence different from the bound sequence
+  // as an unavoidable performance optimization. This is the only valid use-case
+  // for this method. See
+  // https://docs.google.com/document/d/1IGzq9Nx69GS_2iynGmPWo5sFAD2DcCyBY1zIvZwF7k8
+  // for details.
+  //
   // Returns false if the WeakPtr is confirmed to be invalid. This call is safe
   // to make from any thread, e.g. to optimize away unnecessary work, but
   // RefIsValid() must always be called, on the correct sequence, before
@@ -348,6 +377,25 @@ class BASE_EXPORT WeakPtrFactoryBase {
 };
 }  // namespace internal
 
+namespace subtle {
+
+// Restricts access to WeakPtrFactory::BindToCurrentSequence() to authorized
+// callers.
+class BASE_EXPORT BindWeakPtrFactoryPassKey {
+ private:
+  // Avoid =default to disallow creation by uniform initialization.
+  BindWeakPtrFactoryPassKey() {}
+
+  friend class BindWeakPtrFactoryForTesting;
+  friend class performance_manager::FrameNodeImpl;
+  friend class performance_manager::PageNodeImpl;
+  friend class performance_manager::ProcessNodeImpl;
+  friend class performance_manager::WorkerNodeImpl;
+  friend class sequence_manager::internal::TaskQueueImpl;
+};
+
+}  // namespace subtle
+
 // A class may be composed of a WeakPtrFactory and thereby
 // control how it exposes weak pointers to itself.  This is helpful if you only
 // need weak pointers within the implementation of a class.  This class is also
@@ -371,18 +419,16 @@ class WeakPtrFactory : public internal::WeakPtrFactoryBase {
                             reinterpret_cast<const T*>(ptr_));
   }
 
-  template <int&... ExplicitArgumentBarrier,
-            typename U = T,
-            typename = std::enable_if_t<!std::is_const_v<U>>>
-  WeakPtr<T> GetWeakPtr() {
+  WeakPtr<T> GetWeakPtr()
+    requires(!std::is_const_v<T>)
+  {
     return WeakPtr<T>(weak_reference_owner_.GetRef(),
                       reinterpret_cast<T*>(ptr_));
   }
 
-  template <int&... ExplicitArgumentBarrier,
-            typename U = T,
-            typename = std::enable_if_t<!std::is_const_v<U>>>
-  WeakPtr<T> GetMutableWeakPtr() const {
+  WeakPtr<T> GetMutableWeakPtr() const
+    requires(!std::is_const_v<T>)
+  {
     return WeakPtr<T>(weak_reference_owner_.GetRef(),
                       reinterpret_cast<T*>(ptr_));
   }
@@ -410,6 +456,13 @@ class WeakPtrFactory : public internal::WeakPtrFactoryBase {
   bool HasWeakPtrs() const {
     DCHECK(ptr_);
     return weak_reference_owner_.HasRefs();
+  }
+
+  // Rebind the factory to the current sequence. This allows creating an object
+  // and associated weak pointers on a different thread from the one they are
+  // used on.
+  void BindToCurrentSequence(subtle::BindWeakPtrFactoryPassKey) {
+    weak_reference_owner_.BindToCurrentSequence();
   }
 };
 

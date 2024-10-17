@@ -11,16 +11,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iosfwd>
-#include <limits>
 #include <map>
 #include <memory>
-#include <new>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/strings/string_view.h"
+#include "absl/types/variant.h"
 #include "quiche/common/platform/api/quiche_export.h"
+#include "quiche/common/platform/api/quiche_flags.h"
 #include "quiche/common/platform/api/quiche_logging.h"
 #include "quiche/spdy/core/http2_header_block.h"
 #include "quiche/spdy/core/spdy_alt_svc_wire_format.h"
@@ -36,44 +38,46 @@ using SpdySettingsId = uint16_t;
 
 // Specifies the stream ID used to denote the current session (for
 // flow control).
-const SpdyStreamId kSessionFlowControlStreamId = 0;
+inline constexpr SpdyStreamId kSessionFlowControlStreamId = 0;
 
 // 0 is not a valid stream ID for any other purpose than flow control.
-const SpdyStreamId kInvalidStreamId = 0;
+inline constexpr SpdyStreamId kInvalidStreamId = 0;
 
 // Max stream id.
-const SpdyStreamId kMaxStreamId = 0x7fffffff;
+inline constexpr SpdyStreamId kMaxStreamId = 0x7fffffff;
 
 // The maximum possible frame payload size allowed by the spec.
-const uint32_t kSpdyMaxFrameSizeLimit = (1 << 24) - 1;
+inline constexpr uint32_t kSpdyMaxFrameSizeLimit = (1 << 24) - 1;
 
 // The initial value for the maximum frame payload size as per the spec. This is
 // the maximum control frame size we accept.
-const uint32_t kHttp2DefaultFramePayloadLimit = 1 << 14;
+inline constexpr uint32_t kHttp2DefaultFramePayloadLimit = 1 << 14;
 
 // The maximum size of the control frames that we send, including the size of
 // the header. This limit is arbitrary. We can enforce it here or at the
 // application layer. We chose the framing layer, but this can be changed (or
 // removed) if necessary later down the line.
-const size_t kHttp2MaxControlFrameSendSize = kHttp2DefaultFramePayloadLimit - 1;
+inline constexpr size_t kHttp2MaxControlFrameSendSize =
+    kHttp2DefaultFramePayloadLimit - 1;
 
 // Number of octets in the frame header.
-const size_t kFrameHeaderSize = 9;
+inline constexpr size_t kFrameHeaderSize = 9;
 
 // The initial value for the maximum frame payload size as per the spec. This is
 // the maximum control frame size we accept.
-const uint32_t kHttp2DefaultFrameSizeLimit =
+inline constexpr uint32_t kHttp2DefaultFrameSizeLimit =
     kHttp2DefaultFramePayloadLimit + kFrameHeaderSize;
 
 // The initial value for the maximum size of the header list, "unlimited" (max
 // unsigned 32-bit int) as per the spec.
-const uint32_t kSpdyInitialHeaderListSizeLimit = 0xFFFFFFFF;
+inline constexpr uint32_t kSpdyInitialHeaderListSizeLimit = 0xFFFFFFFF;
 
 // Maximum window size for a Spdy stream or session.
-const int32_t kSpdyMaximumWindowSize = 0x7FFFFFFF;  // Max signed 32bit int
+inline constexpr int32_t kSpdyMaximumWindowSize =
+    0x7FFFFFFF;  // Max signed 32bit int
 
 // Maximum padding size in octets for one DATA or HEADERS or PUSH_PROMISE frame.
-const int32_t kPaddingSizePerFrame = 256;
+inline constexpr int32_t kPaddingSizePerFrame = 256;
 
 // The HTTP/2 connection preface, which must be the first bytes sent by the
 // client upon starting an HTTP/2 connection, and which must be followed by a
@@ -82,7 +86,7 @@ const int32_t kPaddingSizePerFrame = 256;
 // preface is only the first |kHttp2ConnectionHeaderPrefixSize| bytes, which
 // excludes the null terminator.
 QUICHE_EXPORT extern const char* const kHttp2ConnectionHeaderPrefix;
-const int kHttp2ConnectionHeaderPrefixSize = 24;
+inline constexpr int kHttp2ConnectionHeaderPrefixSize = 24;
 
 // Wire values for HTTP2 frame types.
 enum class SpdyFrameType : uint8_t {
@@ -207,17 +211,17 @@ typedef uint8_t SpdyPriority;
 
 // Lowest and Highest here refer to SPDY priorities as described in
 // https://www.chromium.org/spdy/spdy-protocol/spdy-protocol-draft3-1#TOC-2.3.3-Stream-priority
-const SpdyPriority kV3HighestPriority = 0;
-const SpdyPriority kV3LowestPriority = 7;
+inline constexpr SpdyPriority kV3HighestPriority = 0;
+inline constexpr SpdyPriority kV3LowestPriority = 7;
 
 // Returns SPDY 3.x priority value clamped to the valid range of [0, 7].
 QUICHE_EXPORT SpdyPriority ClampSpdy3Priority(SpdyPriority priority);
 
 // HTTP/2 stream weights are integers in range [1, 256], as specified in RFC
 // 7540 section 5.3.2. Default stream weight is defined in section 5.3.5.
-const int kHttp2MinStreamWeight = 1;
-const int kHttp2MaxStreamWeight = 256;
-const int kHttp2DefaultStreamWeight = 16;
+inline constexpr int kHttp2MinStreamWeight = 1;
+inline constexpr int kHttp2MaxStreamWeight = 256;
+inline constexpr int kHttp2DefaultStreamWeight = 16;
 
 // Returns HTTP/2 weight clamped to the valid range of [1, 256].
 QUICHE_EXPORT int ClampHttp2Weight(int weight);
@@ -284,53 +288,65 @@ QUICHE_EXPORT const char* ErrorCodeToString(SpdyErrorCode error_code);
 QUICHE_EXPORT const char* WriteSchedulerTypeToString(WriteSchedulerType type);
 
 // Minimum size of a frame, in octets.
-const size_t kFrameMinimumSize = kFrameHeaderSize;
+inline constexpr size_t kFrameMinimumSize = kFrameHeaderSize;
 
 // Minimum frame size for variable size frame types (includes mandatory fields),
 // frame size for fixed size frames, in octets.
 
-const size_t kDataFrameMinimumSize = kFrameHeaderSize;
-const size_t kHeadersFrameMinimumSize = kFrameHeaderSize;
+inline constexpr size_t kDataFrameMinimumSize = kFrameHeaderSize;
+inline constexpr size_t kHeadersFrameMinimumSize = kFrameHeaderSize;
 // PRIORITY frame has stream_dependency (4 octets) and weight (1 octet) fields.
-const size_t kPriorityFrameSize = kFrameHeaderSize + 5;
+inline constexpr size_t kPriorityFrameSize = kFrameHeaderSize + 5;
 // RST_STREAM frame has error_code (4 octets) field.
-const size_t kRstStreamFrameSize = kFrameHeaderSize + 4;
-const size_t kSettingsFrameMinimumSize = kFrameHeaderSize;
-const size_t kSettingsOneSettingSize =
+inline constexpr size_t kRstStreamFrameSize = kFrameHeaderSize + 4;
+inline constexpr size_t kSettingsFrameMinimumSize = kFrameHeaderSize;
+inline constexpr size_t kSettingsOneSettingSize =
     sizeof(uint32_t) + sizeof(SpdySettingsId);
 // PUSH_PROMISE frame has promised_stream_id (4 octet) field.
-const size_t kPushPromiseFrameMinimumSize = kFrameHeaderSize + 4;
+inline constexpr size_t kPushPromiseFrameMinimumSize = kFrameHeaderSize + 4;
 // PING frame has opaque_bytes (8 octet) field.
-const size_t kPingFrameSize = kFrameHeaderSize + 8;
+inline constexpr size_t kPingFrameSize = kFrameHeaderSize + 8;
 // GOAWAY frame has last_stream_id (4 octet) and error_code (4 octet) fields.
-const size_t kGoawayFrameMinimumSize = kFrameHeaderSize + 8;
+inline constexpr size_t kGoawayFrameMinimumSize = kFrameHeaderSize + 8;
 // WINDOW_UPDATE frame has window_size_increment (4 octet) field.
-const size_t kWindowUpdateFrameSize = kFrameHeaderSize + 4;
-const size_t kContinuationFrameMinimumSize = kFrameHeaderSize;
+inline constexpr size_t kWindowUpdateFrameSize = kFrameHeaderSize + 4;
+inline constexpr size_t kContinuationFrameMinimumSize = kFrameHeaderSize;
 // ALTSVC frame has origin_len (2 octets) field.
-const size_t kGetAltSvcFrameMinimumSize = kFrameHeaderSize + 2;
+inline constexpr size_t kGetAltSvcFrameMinimumSize = kFrameHeaderSize + 2;
 // PRIORITY_UPDATE frame has prioritized_stream_id (4 octets) field.
-const size_t kPriorityUpdateFrameMinimumSize = kFrameHeaderSize + 4;
+inline constexpr size_t kPriorityUpdateFrameMinimumSize = kFrameHeaderSize + 4;
 // ACCEPT_CH frame may have empty payload.
-const size_t kAcceptChFrameMinimumSize = kFrameHeaderSize;
+inline constexpr size_t kAcceptChFrameMinimumSize = kFrameHeaderSize;
 // Each ACCEPT_CH frame entry has a 16-bit origin length and a 16-bit value
 // length.
-const size_t kAcceptChFramePerEntryOverhead = 4;
+inline constexpr size_t kAcceptChFramePerEntryOverhead = 4;
 
 // Maximum possible configurable size of a frame in octets.
-const size_t kMaxFrameSizeLimit = kSpdyMaxFrameSizeLimit + kFrameHeaderSize;
+inline constexpr size_t kMaxFrameSizeLimit =
+    kSpdyMaxFrameSizeLimit + kFrameHeaderSize;
 // Size of a header block size field.
-const size_t kSizeOfSizeField = sizeof(uint32_t);
+inline constexpr size_t kSizeOfSizeField = sizeof(uint32_t);
 // Initial window size for a stream in bytes.
-const int32_t kInitialStreamWindowSize = 64 * 1024 - 1;
+inline constexpr int32_t kInitialStreamWindowSize = 64 * 1024 - 1;
 // Initial window size for a session in bytes.
-const int32_t kInitialSessionWindowSize = 64 * 1024 - 1;
+inline constexpr int32_t kInitialSessionWindowSize = 64 * 1024 - 1;
 // The NPN string for HTTP2, "h2".
 QUICHE_EXPORT extern const char* const kHttp2Npn;
+// An estimate of the HPACK overhead for each header field in bytes, intended to
+// be no smaller than actual overhead, based on the literal header field
+// representation in RFC 7541 Section 6.2 (with or without indexing):
+//   - 1 byte for the opcode.
+//   - 2 bytes for the name length (assuming new name).
+//   - 3 bytes for the value length.
+// TODO(b/322146543): Remove the `New` suffix with deprecation of
+// --gfe2_reloadable_flag_http2_add_hpack_overhead_bytes2.
+inline constexpr size_t kPerHeaderHpackOverheadNew = 6;
 // An estimate size of the HPACK overhead for each header field. 1 bytes for
 // indexed literal, 1 bytes for key literal and length encoding, and 2 bytes for
 // value literal and length encoding.
-const size_t kPerHeaderHpackOverhead = 4;
+// TODO(b/322146543): Remove with deprecation of
+// --gfe2_reloadable_flag_http2_add_hpack_overhead_bytes2.
+inline constexpr size_t kPerHeaderHpackOverheadOld = 4;
 
 // Names of pseudo-headers defined for HTTP/2 requests.
 QUICHE_EXPORT extern const char* const kHttp2AuthorityHeader;
@@ -344,25 +360,23 @@ QUICHE_EXPORT extern const char* const kHttp2StatusHeader;
 
 QUICHE_EXPORT size_t GetNumberRequiredContinuationFrames(size_t size);
 
-// Variant type (i.e. tagged union) that is either a SPDY 3.x priority value,
-// or else an HTTP/2 stream dependency tuple {parent stream ID, weight,
-// exclusive bit}. Templated to allow for use by QUIC code; SPDY and HTTP/2
-// code should use the concrete type instantiation SpdyStreamPrecedence.
+// Variant type that is either a SPDY 3.x priority value, or else an HTTP/2
+// stream dependency tuple {parent stream ID, weight, exclusive bit}. Templated
+// to allow for use by QUIC code; SPDY and HTTP/2 code should use the concrete
+// type instantiation SpdyStreamPrecedence.
 template <typename StreamIdType>
 class QUICHE_EXPORT StreamPrecedence {
  public:
   // Constructs instance that is a SPDY 3.x priority. Clamps priority value to
   // the valid range [0, 7].
   explicit StreamPrecedence(SpdyPriority priority)
-      : is_spdy3_priority_(true),
-        spdy3_priority_(ClampSpdy3Priority(priority)) {}
+      : precedence_(ClampSpdy3Priority(priority)) {}
 
   // Constructs instance that is an HTTP/2 stream weight, parent stream ID, and
   // exclusive bit. Clamps stream weight to the valid range [1, 256].
   StreamPrecedence(StreamIdType parent_id, int weight, bool is_exclusive)
-      : is_spdy3_priority_(false),
-        http2_stream_dependency_{parent_id, ClampHttp2Weight(weight),
-                                 is_exclusive} {}
+      : precedence_(Http2StreamDependency{parent_id, ClampHttp2Weight(weight),
+                                          is_exclusive}) {}
 
   // Intentionally copyable, to support pass by value.
   StreamPrecedence(const StreamPrecedence& other) = default;
@@ -370,7 +384,9 @@ class QUICHE_EXPORT StreamPrecedence {
 
   // Returns true if this instance is a SPDY 3.x priority, or false if this
   // instance is an HTTP/2 stream dependency.
-  bool is_spdy3_priority() const { return is_spdy3_priority_; }
+  bool is_spdy3_priority() const {
+    return absl::holds_alternative<SpdyPriority>(precedence_);
+  }
 
   // Returns SPDY 3.x priority value. If |is_spdy3_priority()| is true, this is
   // the value provided at construction, clamped to the legal priority
@@ -379,16 +395,18 @@ class QUICHE_EXPORT StreamPrecedence {
   // precedence) and maximum weight 256 corresponds to priority 0 (highest
   // precedence).
   SpdyPriority spdy3_priority() const {
-    return is_spdy3_priority_
-               ? spdy3_priority_
-               : Http2WeightToSpdy3Priority(http2_stream_dependency_.weight);
+    return is_spdy3_priority()
+               ? absl::get<SpdyPriority>(precedence_)
+               : Http2WeightToSpdy3Priority(
+                     absl::get<Http2StreamDependency>(precedence_).weight);
   }
 
   // Returns HTTP/2 parent stream ID. If |is_spdy3_priority()| is false, this is
   // the value provided at construction, otherwise it is |kHttp2RootStreamId|.
   StreamIdType parent_id() const {
-    return is_spdy3_priority_ ? kHttp2RootStreamId
-                              : http2_stream_dependency_.parent_id;
+    return is_spdy3_priority()
+               ? kHttp2RootStreamId
+               : absl::get<Http2StreamDependency>(precedence_).parent_id;
   }
 
   // Returns HTTP/2 stream weight. If |is_spdy3_priority()| is false, this is
@@ -398,26 +416,22 @@ class QUICHE_EXPORT StreamPrecedence {
   // maximum weight 256 and priority 7 (lowest precedence) corresponds to
   // minimum weight 1.
   int weight() const {
-    return is_spdy3_priority_ ? Spdy3PriorityToHttp2Weight(spdy3_priority_)
-                              : http2_stream_dependency_.weight;
+    return is_spdy3_priority()
+               ? Spdy3PriorityToHttp2Weight(
+                     absl::get<SpdyPriority>(precedence_))
+               : absl::get<Http2StreamDependency>(precedence_).weight;
   }
 
   // Returns HTTP/2 parent stream exclusivity. If |is_spdy3_priority()| is
   // false, this is the value provided at construction, otherwise it is false.
   bool is_exclusive() const {
-    return !is_spdy3_priority_ && http2_stream_dependency_.is_exclusive;
+    return absl::holds_alternative<Http2StreamDependency>(precedence_) &&
+           absl::get<Http2StreamDependency>(precedence_).is_exclusive;
   }
 
   // Facilitates test assertions.
   bool operator==(const StreamPrecedence& other) const {
-    if (is_spdy3_priority()) {
-      return other.is_spdy3_priority() &&
-             (spdy3_priority() == other.spdy3_priority());
-    } else {
-      return !other.is_spdy3_priority() && (parent_id() == other.parent_id()) &&
-             (weight() == other.weight()) &&
-             (is_exclusive() == other.is_exclusive());
-    }
+    return precedence_ == other.precedence_;
   }
 
   bool operator!=(const StreamPrecedence& other) const {
@@ -429,13 +443,14 @@ class QUICHE_EXPORT StreamPrecedence {
     StreamIdType parent_id;
     int weight;
     bool is_exclusive;
+
+    bool operator==(const Http2StreamDependency& other) const {
+      return parent_id == other.parent_id && weight == other.weight &&
+             is_exclusive == other.is_exclusive;
+    }
   };
 
-  bool is_spdy3_priority_;
-  union {
-    SpdyPriority spdy3_priority_;
-    Http2StreamDependency http2_stream_dependency_;
-  };
+  absl::variant<SpdyPriority, Http2StreamDependency> precedence_;
 };
 
 typedef StreamPrecedence<SpdyStreamId> SpdyStreamPrecedence;
@@ -452,7 +467,8 @@ class QUICHE_EXPORT SpdyFrameIR {
   SpdyStreamId stream_id() const { return stream_id_; }
   virtual bool fin() const;
   // Returns an estimate of the size of the serialized frame, without applying
-  // compression. May not be exact.
+  // compression. May not be exact, but implementations should return the same
+  // value for a const frame.
   virtual size_t size() const = 0;
 
   // Returns the number of bytes of flow control window that would be consumed
@@ -741,6 +757,8 @@ class QUICHE_EXPORT SpdyHeadersIR : public SpdyFrameWithHeaderBlockIR {
   bool exclusive_ = false;
   bool padded_ = false;
   int padding_payload_len_ = 0;
+  const bool add_hpack_overhead_bytes_ =
+      GetQuicheReloadableFlag(http2_add_hpack_overhead_bytes2);
 };
 
 class QUICHE_EXPORT SpdyWindowUpdateIR : public SpdyFrameIR {
@@ -975,84 +993,41 @@ class QUICHE_EXPORT SpdyUnknownIR : public SpdyFrameIR {
 
 class QUICHE_EXPORT SpdySerializedFrame {
  public:
-  SpdySerializedFrame()
-      : frame_(const_cast<char*>("")), size_(0), owns_buffer_(false) {}
+  SpdySerializedFrame() : size_(0) {}
 
-  // Create a valid SpdySerializedFrame using a pre-created buffer.
-  // If |owns_buffer| is true, this class takes ownership of the buffer and will
-  // delete it on cleanup.  The buffer must have been created using new char[].
-  // If |owns_buffer| is false, the caller retains ownership of the buffer and
-  // is responsible for making sure the buffer outlives this frame.  In other
-  // words, this class does NOT create a copy of the buffer.
-  SpdySerializedFrame(char* data, size_t size, bool owns_buffer)
-      : frame_(data), size_(size), owns_buffer_(owns_buffer) {}
+  // Creates a valid SpdySerializedFrame using a pre-created buffer.
+  SpdySerializedFrame(std::unique_ptr<char[]> data, size_t size)
+      : frame_(std::move(data)), size_(size) {}
 
   SpdySerializedFrame(SpdySerializedFrame&& other)
-      : frame_(other.frame_),
-        size_(other.size_),
-        owns_buffer_(other.owns_buffer_) {
-    // |other| is no longer responsible for the buffer.
-    other.owns_buffer_ = false;
-  }
+      : frame_(std::move(other.frame_)), size_(other.size_) {}
+
   SpdySerializedFrame(const SpdySerializedFrame&) = delete;
   SpdySerializedFrame& operator=(const SpdySerializedFrame&) = delete;
 
   SpdySerializedFrame& operator=(SpdySerializedFrame&& other) {
-    // Free buffer if necessary.
-    if (owns_buffer_) {
-      delete[] frame_;
-    }
     // Take over |other|.
-    frame_ = other.frame_;
+    frame_ = std::move(other.frame_);
     size_ = other.size_;
-    owns_buffer_ = other.owns_buffer_;
-    // |other| is no longer responsible for the buffer.
-    other.owns_buffer_ = false;
     return *this;
   }
 
-  ~SpdySerializedFrame() {
-    if (owns_buffer_) {
-      delete[] frame_;
-    }
-  }
+  ~SpdySerializedFrame() = default;
 
   // Provides access to the frame bytes, which is a buffer containing the frame
   // packed as expected for sending over the wire.
-  char* data() const { return frame_; }
+  char* data() const { return frame_.get(); }
 
   // Returns the actual size of the underlying buffer.
   size_t size() const { return size_; }
 
   operator absl::string_view() const {
-    return absl::string_view{frame_, size_};
+    return absl::string_view{frame_.get(), size_};
   }
-
-  operator std::string() const { return std::string{frame_, size_}; }
-
-  // Returns a buffer containing the contents of the frame, of which the caller
-  // takes ownership, and clears this SpdySerializedFrame.
-  char* ReleaseBuffer() {
-    char* buffer;
-    if (owns_buffer_) {
-      // If the buffer is owned, relinquish ownership to the caller.
-      buffer = frame_;
-      owns_buffer_ = false;
-    } else {
-      // Otherwise, we need to make a copy to give to the caller.
-      buffer = new char[size_];
-      memcpy(buffer, frame_, size_);
-    }
-    *this = SpdySerializedFrame();
-    return buffer;
-  }
-
- protected:
-  char* frame_;
 
  private:
+  std::unique_ptr<char[]> frame_;
   size_t size_;
-  bool owns_buffer_;
 };
 
 // This interface is for classes that want to process SpdyFrameIRs without

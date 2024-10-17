@@ -4,7 +4,6 @@
 #include <cstdint>
 
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "quiche/http2/adapter/data_source.h"
 #include "quiche/http2/adapter/http2_protocol.h"
@@ -143,6 +142,11 @@ class QUICHE_EXPORT Http2Adapter {
   // DataFrameSource::SelectPayloadLength() returning kBlocked). Returns true if
   // the stream was successfully resumed.
   virtual bool ResumeStream(Http2StreamId stream_id) = 0;
+
+  // Called to communicate that a frame on a stream will not be sent.
+  // TODO(birenroy): remove when removing support for nghttp2.
+  virtual void FrameNotSent(Http2StreamId /*stream_id*/,
+                            uint8_t /*frame_type*/) {}
 
  protected:
   // Subclasses should expose a public factory method for constructing and

@@ -5,15 +5,15 @@
 #include "quiche/spdy/test_tools/spdy_test_utils.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <memory>
-#include <new>
-#include <utility>
-#include <vector>
+#include <string>
 
 #include "quiche/common/platform/api/quiche_logging.h"
 #include "quiche/common/platform/api/quiche_test.h"
 #include "quiche/common/quiche_endian.h"
+#include "quiche/spdy/core/spdy_protocol.h"
 
 namespace spdy {
 namespace test {
@@ -95,6 +95,12 @@ void SetFrameLength(SpdySerializedFrame* frame, size_t length) {
     int32_t wire_length = quiche::QuicheEndian::HostToNet32(length);
     memcpy(frame->data(), reinterpret_cast<char*>(&wire_length) + 1, 3);
   }
+}
+
+SpdySerializedFrame MakeSerializedFrame(const char* data, size_t length) {
+  std::unique_ptr<char[]> copy = std::make_unique<char[]>(length);
+  std::copy(data, data + length, copy.get());
+  return SpdySerializedFrame(std::move(copy), length);
 }
 
 }  // namespace test

@@ -4,16 +4,16 @@
 
 package org.chromium.net;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import android.content.Context;
-import android.net.http.HttpEngine;
 import android.os.ConditionVariable;
 
-import org.junit.Assert;
+import org.jni_zero.CalledByNative;
+import org.jni_zero.JNINamespace;
+import org.jni_zero.NativeClassQualifiedName;
+import org.jni_zero.NativeMethods;
 
-import org.chromium.base.annotations.CalledByNative;
-import org.chromium.base.annotations.JNINamespace;
-import org.chromium.base.annotations.NativeClassQualifiedName;
-import org.chromium.base.annotations.NativeMethods;
 import org.chromium.net.impl.CronetUrlRequestContext;
 
 /**
@@ -23,7 +23,7 @@ import org.chromium.net.impl.CronetUrlRequestContext;
 @JNINamespace("cronet")
 public final class TestUploadDataStreamHandler {
     private final CronetTestUtil.NetworkThreadTestConnector mNetworkThreadTestConnector;
-    private final HttpEngine mCronetEngine;
+    private final CronetEngine mCronetEngine;
     private long mTestUploadDataStreamHandler;
     private ConditionVariable mWaitInitCalled = new ConditionVariable();
     private ConditionVariable mWaitInitComplete = new ConditionVariable();
@@ -38,12 +38,15 @@ public final class TestUploadDataStreamHandler {
     private String mData = "";
 
     public TestUploadDataStreamHandler(Context context, final long uploadDataStream) {
-        mCronetEngine = new HttpEngine.Builder(context).build();
+        mCronetEngine = new CronetEngine.Builder(context).build();
         mNetworkThreadTestConnector = new CronetTestUtil.NetworkThreadTestConnector(mCronetEngine);
         CronetUrlRequestContext requestContext = (CronetUrlRequestContext) mCronetEngine;
         mTestUploadDataStreamHandler =
-                TestUploadDataStreamHandlerJni.get().createTestUploadDataStreamHandler(
-                        this, uploadDataStream, requestContext.getUrlRequestContextAdapter());
+                TestUploadDataStreamHandlerJni.get()
+                        .createTestUploadDataStreamHandler(
+                                this,
+                                uploadDataStream,
+                                requestContext.getUrlRequestContextAdapter());
     }
 
     public void destroyNativeObjects() {
@@ -55,9 +58,7 @@ public final class TestUploadDataStreamHandler {
         }
     }
 
-    /**
-     * Init and returns whether init completes synchronously.
-     */
+    /** Init and returns whether init completes synchronously. */
     public boolean init() {
         mData = "";
         TestUploadDataStreamHandlerJni.get().init(mTestUploadDataStreamHandler);
@@ -82,8 +83,8 @@ public final class TestUploadDataStreamHandler {
      * by the native UploadDataStream.
      */
     public void checkInitCallbackNotInvoked() {
-        TestUploadDataStreamHandlerJni.get().checkInitCallbackNotInvoked(
-                mTestUploadDataStreamHandler);
+        TestUploadDataStreamHandlerJni.get()
+                .checkInitCallbackNotInvoked(mTestUploadDataStreamHandler);
         mWaitCheckInit.block();
         mWaitCheckInit.close();
     }
@@ -93,8 +94,8 @@ public final class TestUploadDataStreamHandler {
      * by the native UploadDataStream.
      */
     public void checkReadCallbackNotInvoked() {
-        TestUploadDataStreamHandlerJni.get().checkReadCallbackNotInvoked(
-                mTestUploadDataStreamHandler);
+        TestUploadDataStreamHandlerJni.get()
+                .checkReadCallbackNotInvoked(mTestUploadDataStreamHandler);
         mWaitCheckRead.block();
         mWaitCheckRead.close();
     }
@@ -150,14 +151,14 @@ public final class TestUploadDataStreamHandler {
     // Called on network thread.
     @CalledByNative
     private void onCheckInitCallbackNotInvoked(boolean initCallbackNotInvoked) {
-        Assert.assertTrue(initCallbackNotInvoked);
+        assertThat(initCallbackNotInvoked).isTrue();
         mWaitCheckInit.open();
     }
 
     // Called on network thread.
     @CalledByNative
     private void onCheckReadCallbackNotInvoked(boolean readCallbackNotInvoked) {
-        Assert.assertTrue(readCallbackNotInvoked);
+        assertThat(readCallbackNotInvoked).isTrue();
         mWaitCheckRead.open();
     }
 

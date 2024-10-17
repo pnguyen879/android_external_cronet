@@ -5,6 +5,7 @@
 #ifndef NET_COOKIES_COOKIE_UTIL_H_
 #define NET_COOKIES_COOKIE_UTIL_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,7 +18,7 @@
 #include "net/cookies/cookie_options.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/first_party_sets/first_party_set_metadata.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "net/first_party_sets/first_party_sets_cache_filter.h"
 #include "url/origin.h"
 
 class GURL;
@@ -43,10 +44,16 @@ enum class StorageAccessResult {
   ACCESS_BLOCKED = 0,
   ACCESS_ALLOWED = 1,
   ACCESS_ALLOWED_STORAGE_ACCESS_GRANT = 2,
-  ACCESS_ALLOWED_FORCED = 3,
+  OBSOLETE_ACCESS_ALLOWED_FORCED = 3 /*(DEPRECATED)*/,
   ACCESS_ALLOWED_TOP_LEVEL_STORAGE_ACCESS_GRANT = 4,
-  kMaxValue = ACCESS_ALLOWED_TOP_LEVEL_STORAGE_ACCESS_GRANT,
+  ACCESS_ALLOWED_3PCD_TRIAL = 5,
+  ACCESS_ALLOWED_3PCD_METADATA_GRANT = 6,
+  ACCESS_ALLOWED_3PCD_HEURISTICS_GRANT = 7,
+  ACCESS_ALLOWED_CORS_EXCEPTION = 8,
+  ACCESS_ALLOWED_TOP_LEVEL_3PCD_TRIAL = 9,
+  kMaxValue = ACCESS_ALLOWED_TOP_LEVEL_3PCD_TRIAL,
 };
+
 // Helper to fire telemetry indicating if a given request for storage was
 // allowed or not by the provided |result|.
 NET_EXPORT void FireStorageAccessHistogram(StorageAccessResult result);
@@ -172,7 +179,7 @@ NET_EXPORT std::string SerializeRequestCookieLine(
 // `initiator` is the origin ultimately responsible for getting the request
 // issued. It may be different from `site_for_cookies`.
 //
-// absl::nullopt for `initiator` denotes that the navigation was initiated by
+// std::nullopt for `initiator` denotes that the navigation was initiated by
 // the user directly interacting with the browser UI, e.g. entering a URL
 // or selecting a bookmark.
 //
@@ -197,7 +204,7 @@ NET_EXPORT CookieOptions::SameSiteCookieContext
 ComputeSameSiteContextForRequest(const std::string& http_method,
                                  const std::vector<GURL>& url_chain,
                                  const SiteForCookies& site_for_cookies,
-                                 const absl::optional<url::Origin>& initiator,
+                                 const std::optional<url::Origin>& initiator,
                                  bool is_main_frame_navigation,
                                  bool force_ignore_site_for_cookies);
 
@@ -207,7 +214,7 @@ ComputeSameSiteContextForRequest(const std::string& http_method,
 NET_EXPORT CookieOptions::SameSiteCookieContext
 ComputeSameSiteContextForScriptGet(const GURL& url,
                                    const SiteForCookies& site_for_cookies,
-                                   const absl::optional<url::Origin>& initiator,
+                                   const std::optional<url::Origin>& initiator,
                                    bool force_ignore_site_for_cookies);
 
 // Determines which of the cookies for the request URL can be set from a network
@@ -225,7 +232,7 @@ ComputeSameSiteContextForScriptGet(const GURL& url,
 NET_EXPORT CookieOptions::SameSiteCookieContext
 ComputeSameSiteContextForResponse(const std::vector<GURL>& url_chain,
                                   const SiteForCookies& site_for_cookies,
-                                  const absl::optional<url::Origin>& initiator,
+                                  const std::optional<url::Origin>& initiator,
                                   bool is_main_frame_navigation,
                                   bool force_ignore_site_for_cookies);
 
@@ -248,39 +255,38 @@ ComputeSameSiteContextForSubresource(const GURL& url,
                                      const SiteForCookies& site_for_cookies,
                                      bool force_ignore_site_for_cookies);
 
+NET_EXPORT bool IsPortBoundCookiesEnabled();
+
+NET_EXPORT bool IsSchemeBoundCookiesEnabled();
+
+// Returns true if either portion of OBC is enabled.
+NET_EXPORT bool IsOriginBoundCookiesPartiallyEnabled();
+
+NET_EXPORT bool IsTimeLimitedInsecureCookiesEnabled();
+
 // Returns whether the respective feature is enabled.
 NET_EXPORT bool IsSchemefulSameSiteEnabled();
 
-// Computes the First-Party Sets metadata, determining which of the cookies for
-// `request_site` can be accessed. `isolation_info` must be fully populated.  If
-// `force_ignore_top_frame_party` is true, the top frame from `isolation_info`
-// will be assumed to be same-party with `request_site`, regardless of what it
-// is.
+// Computes the First-Party Sets metadata and cache match information.
+// `isolation_info` must be fully populated.
 //
 // The result may be returned synchronously, or `callback` may be invoked
 // asynchronously with the result. The callback will be invoked iff the return
 // value is nullopt; i.e. a result will be provided via return value or
 // callback, but not both, and not neither.
-[[nodiscard]] NET_EXPORT absl::optional<FirstPartySetMetadata>
+[[nodiscard]] NET_EXPORT std::optional<
+    std::pair<FirstPartySetMetadata, FirstPartySetsCacheFilter::MatchInfo>>
 ComputeFirstPartySetMetadataMaybeAsync(
     const SchemefulSite& request_site,
     const IsolationInfo& isolation_info,
     const CookieAccessDelegate* cookie_access_delegate,
-    bool force_ignore_top_frame_party,
-    base::OnceCallback<void(FirstPartySetMetadata)> callback);
+    base::OnceCallback<void(FirstPartySetMetadata,
+                            FirstPartySetsCacheFilter::MatchInfo)> callback);
 
 // Converts a string representing the http request method to its enum
 // representation.
 NET_EXPORT CookieOptions::SameSiteCookieContext::ContextMetadata::HttpMethod
 HttpMethodStringToEnum(const std::string& in);
-
-// Get the SameParty inclusion status. If the cookie is not SameParty, returns
-// kNoSamePartyEnforcement; if the cookie is SameParty but does not have a
-// valid context, returns kEnforceSamePartyExclude.
-NET_EXPORT CookieSamePartyStatus
-GetSamePartyStatus(const CanonicalCookie& cookie,
-                   const CookieOptions& options,
-                   bool same_party_attribute_enabled);
 
 // Takes a CookieAccessResult and returns a bool, returning true if the
 // CookieInclusionStatus in CookieAccessResult was set to "include", else
@@ -307,6 +313,11 @@ NET_EXPORT void RecordCookiePortOmniboxHistograms(const GURL& url);
 NET_EXPORT void DCheckIncludedAndExcludedCookieLists(
     const CookieAccessResultList& included_cookies,
     const CookieAccessResultList& excluded_cookies);
+
+// Returns the default third-party cookie blocking setting, which is false
+// unless you enable ForceThirdPartyCookieBlocking with the command line switch
+// --test-third-party-cookie-phaseout.
+NET_EXPORT bool IsForceThirdPartyCookieBlockingEnabled();
 
 }  // namespace cookie_util
 

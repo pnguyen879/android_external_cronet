@@ -67,25 +67,23 @@ function setup_chromium_src_repo() (
 )
 
 #######################################
-# Apply patches in external/cronet/patches.
-# Globals:
-#   ANDROID_BUILD_TOP
+# Imports intermediate CLs for correct generation of desc_*.json
 # Arguments:
 #   chromium_dir, string
 #######################################
-function apply_patches() (
-  local -r chromium_dir=$1
-  local -r patches_dir="${ANDROID_BUILD_TOP}/external/cronet/patches"
-
+function cherry_pick_chromium_cls() (
   cd "${chromium_dir}"
-
-  local -r patches=$(ls "${patches_dir}")
-  local patch
-  for patch in ${patches}; do
-    git am --3way "${patches_dir}/${patch}"
-  done
+  # Delete once 130.0.6675.0 is imported.
+  git fetch https://chromium.googlesource.com/chromium/src refs/changes/44/5808944/6 && git cherry-pick FETCH_HEAD
+  # Delete once 130.0.6675.0 is imported.
+  git fetch https://chromium.googlesource.com/chromium/src refs/changes/45/5808945/6 && git cherry-pick FETCH_HEAD
+  # Delete once 130.0.6675.0 is imported.
+  git fetch https://chromium.googlesource.com/chromium/src refs/changes/78/5809278/6 && git cherry-pick FETCH_HEAD
+  # Delete once 130.0.6675.0 is imported.
+  git fetch https://chromium.googlesource.com/chromium/src refs/changes/40/5806340/8 && git cherry-pick FETCH_HEAD
+  # Delete once 130.0.6682.0 is imported.
+  git fetch https://chromium.googlesource.com/chromium/src refs/changes/80/5809380/6 && git cherry-pick FETCH_HEAD
 )
-
 #######################################
 # Generate desc.json for a specified architecture.
 # Globals:
@@ -106,7 +104,7 @@ function gn_desc() (
     "use_partition_alloc = false"
     "include_transport_security_state_preload_list = false"
     "use_platform_icu_alternatives = true"
-    "default_min_sdk_version = 19"
+    "default_min_sdk_version = 21"
     "enable_reporting = true"
     "use_hashed_jni_names = true"
     "enable_base_tracing = false"
@@ -120,6 +118,8 @@ function gn_desc() (
     "enable_resource_allowlist_generation=false"
     "exclude_unwind_tables=true"
     "symbol_level=1"
+    "enable_rust=true"
+    "is_cronet_for_aosp_build=true"
   )
   gn_args+=("target_cpu = \"${target_cpu}\"")
 
@@ -159,10 +159,16 @@ if [ -z "${rev}" ]; then
   usage
 fi
 
+if [ -z "${ANDROID_BUILD_TOP}" ]; then
+    echo "ANDROID_BUILD_TOP is not set. Please run source build/envsetup.sh && lunch"
+    exit 1
+fi
+
+
 setup_chromium_src_repo "${rev}" "${chromium_dir}" "${force_reset}"
-apply_patches "${chromium_dir}"
+cherry_pick_chromium_cls "${chromium_dir}"
 gn_desc x86 "${chromium_dir}"
 gn_desc x64 "${chromium_dir}"
 gn_desc arm "${chromium_dir}"
 gn_desc arm64 "${chromium_dir}"
-
+gn_desc riscv64 "${chromium_dir}"

@@ -10,26 +10,38 @@
 #include "base/dcheck_is_on.h"
 #include "base/logging_buildflags.h"
 
+// TODO(crbug.com/1520664): Remove once NOTIMPLEMENTED() call sites include
+// base/notimplemented.h.
+#include "base/notimplemented.h"
+
 namespace logging {
 
-// On DCHECK builds NOTREACHED() match the fatality of DCHECKs. When DCHECKs are
-// non-FATAL a crash report will be generated for the first NOTREACHED() that
-// hits per process.
+// NOTREACHED() annotates should-be unreachable code. When a base::NotFatalUntil
+// milestone is provided the instance is non-fatal (dumps without crashing)
+// until that milestone is hit. That is: `NOTREACHED(base::NotFatalUntil::M120)`
+// starts crashing in M120. See base/check.h.
 //
-// Outside DCHECK builds NOTREACHED() will LOG(ERROR) and also upload a crash
-// report without crashing in order to weed out prevalent NOTREACHED()s in the
-// wild before always turning NOTREACHED()s FATAL.
+// Under the kNotReachedIsFatal experiment all NOTREACHED() without a milestone
+// argument are fatal. As of 2024-03-19 this experiment is 50/50 enabled on M124
+// Canary and Dev with intent to roll out to stable in M124 absent any blocking
+// issues that come up.
 //
-// TODO(crbug.com/851128): Migrate NOTREACHED() callers to NOTREACHED_NORETURN()
-// which is [[noreturn]] and always FATAL. Once that's done, rename
-// NOTREACHED_NORETURN() back to NOTREACHED() and remove the non-FATAL version.
+// TODO(crbug.com/851128): After kNotReachedIsFatal is universally rolled out
+// then move callers without a non-fatal milestone argument to
+// NOTREACHED_NORETURN(). Then rename the [[noreturn]] version back to
+// NOTREACHED().
 #if CHECK_WILL_STREAM() || BUILDFLAG(ENABLE_LOG_ERROR_NOT_REACHED)
-#define NOTREACHED() \
-  CHECK_FUNCTION_IMPL(::logging::NotReachedError::NotReached(), false)
+#define NOTREACHED(...)        \
+  LOGGING_CHECK_FUNCTION_IMPL( \
+      ::logging::NotReachedError::NotReached(__VA_ARGS__), false)
 #else
-#define NOTREACHED()                                       \
-  (true) ? ::logging::NotReachedError::TriggerNotReached() \
-         : EAT_CHECK_STREAM_PARAMS()
+#define BASE_HAS_VA_ARGS(...) 1
+#define NOTREACHED(...)                                            \
+  BASE_IF(BASE_IS_EMPTY(__VA_ARGS__),                              \
+          (true) ? ::logging::NotReachedError::TriggerNotReached() \
+                 : EAT_CHECK_STREAM_PARAMS(),                      \
+          LOGGING_CHECK_FUNCTION_IMPL(                             \
+              ::logging::NotReachedError::NotReached(__VA_ARGS__), false))
 #endif
 
 // NOTREACHED_NORETURN() annotates paths that are supposed to be unreachable.
@@ -37,8 +49,7 @@ namespace logging {
 // TODO(crbug.com/851128): Rename back to NOTREACHED() once there are no callers
 // of the old non-CHECK-fatal macro.
 #if CHECK_WILL_STREAM()
-#define NOTREACHED_NORETURN() \
-  ::logging::NotReachedNoreturnError(__FILE__, __LINE__)
+#define NOTREACHED_NORETURN() ::logging::NotReachedNoreturnError()
 #else
 // This function is used to be able to detect NOTREACHED() failures in stack
 // traces where this symbol is preserved (even if inlined). Its implementation
@@ -51,28 +62,11 @@ namespace logging {
   (true) ? ::logging::NotReachedFailure() : EAT_CHECK_STREAM_PARAMS()
 #endif
 
-// The NOTIMPLEMENTED() macro annotates codepaths which have not been
-// implemented yet. If output spam is a serious concern,
-// NOTIMPLEMENTED_LOG_ONCE can be used.
-// Note that the NOTIMPLEMENTED_LOG_ONCE() macro does not allow custom error
-// messages to be appended to the macro to log, unlike NOTIMPLEMENTED() which
-// does support the pattern of appending a custom error message.  As in, the
-// NOTIMPLEMENTED_LOG_ONCE() << "foo message"; pattern is not supported.
-#if DCHECK_IS_ON()
-#define NOTIMPLEMENTED() \
-  ::logging::CheckError::NotImplemented(__FILE__, __LINE__, __PRETTY_FUNCTION__)
-#else
-#define NOTIMPLEMENTED() EAT_CHECK_STREAM_PARAMS()
-#endif
-
-#define NOTIMPLEMENTED_LOG_ONCE()    \
-  {                                  \
-    static bool logged_once = false; \
-    if (!logged_once) {              \
-      NOTIMPLEMENTED();              \
-      logged_once = true;            \
-    }                                \
-  }
+// The DUMP_WILL_BE_NOTREACHED_NORETURN() macro provides a convenient way to
+// non-fatally dump in official builds if ever hit. See DUMP_WILL_BE_CHECK for
+// suggested usage.
+#define DUMP_WILL_BE_NOTREACHED_NORETURN() \
+  ::logging::CheckError::DumpWillBeNotReachedNoreturn()
 
 }  // namespace logging
 

@@ -214,7 +214,7 @@ BASE_FEATURE(
     kPersistentHistogramsFeature,
     "PersistentHistograms",
 #if BUILDFLAG(IS_FUCHSIA)
-    // TODO(crbug.com/1295119): Enable once writable mmap() is supported. Also
+    // TODO(crbug.com/42050425): Enable once writable mmap() is supported. Also
     // move the initialization earlier to chrome/app/chrome_main_delegate.cc.
     base::FEATURE_DISABLED_BY_DEFAULT
 #else
@@ -277,10 +277,15 @@ void PersistentHistogramsCleanup(const base::FilePath& metrics_dir) {
       base::Seconds(kSpareFileCreateDelaySeconds));
 
 #if BUILDFLAG(IS_WIN)
+  // Post a best effort task that will delete files. Unlike SKIP_ON_SHUTDOWN,
+  // which will block on the deletion if the task already started,
+  // CONTINUE_ON_SHUTDOWN will not block shutdown on the task completing. It's
+  // not a *necessity* to delete the files the same session they are "detected".
+  // On shutdown, the deletion will be interrupted.
   base::ThreadPool::PostDelayedTask(
       FROM_HERE,
-      {base::MayBlock(), base::TaskPriority::LOWEST,
-       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
       base::BindOnce(&DeleteOldWindowsTempFiles, metrics_dir),
       kDeleteOldWindowsTempFilesDelay);
 #endif  // BUILDFLAG(IS_WIN)

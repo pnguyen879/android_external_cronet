@@ -31,13 +31,12 @@ class QpackEncoderPeer;
 }  // namespace test
 
 // QPACK encoder class.  Exactly one instance should exist per QUIC connection.
-class QUIC_EXPORT_PRIVATE QpackEncoder
-    : public QpackDecoderStreamReceiver::Delegate {
+class QUICHE_EXPORT QpackEncoder : public QpackDecoderStreamReceiver::Delegate {
  public:
   // Interface for receiving notification that an error has occurred on the
   // decoder stream.  This MUST be treated as a connection error of type
   // HTTP_QPACK_DECODER_STREAM_ERROR.
-  class QUIC_EXPORT_PRIVATE DecoderStreamErrorDelegate {
+  class QUICHE_EXPORT DecoderStreamErrorDelegate {
    public:
     virtual ~DecoderStreamErrorDelegate() {}
 
@@ -45,7 +44,8 @@ class QUIC_EXPORT_PRIVATE QpackEncoder
                                       absl::string_view error_message) = 0;
   };
 
-  QpackEncoder(DecoderStreamErrorDelegate* decoder_stream_error_delegate);
+  QpackEncoder(DecoderStreamErrorDelegate* decoder_stream_error_delegate,
+               HuffmanEncoding huffman_encoding);
   ~QpackEncoder() override;
 
   // Encode a header list.  If |encoder_stream_sent_byte_count| is not null,
@@ -146,6 +146,7 @@ class QUIC_EXPORT_PRIVATE QpackEncoder
   std::string SecondPassEncode(Representations representations,
                                uint64_t required_insert_count) const;
 
+  const HuffmanEncoding huffman_encoding_;
   DecoderStreamErrorDelegate* const decoder_stream_error_delegate_;
   QpackDecoderStreamReceiver decoder_stream_receiver_;
   QpackEncoderStreamSender encoder_stream_sender_;
@@ -156,7 +157,7 @@ class QUIC_EXPORT_PRIVATE QpackEncoder
 };
 
 // QpackEncoder::DecoderStreamErrorDelegate implementation that does nothing.
-class QUIC_EXPORT_PRIVATE NoopDecoderStreamErrorDelegate
+class QUICHE_EXPORT NoopDecoderStreamErrorDelegate
     : public QpackEncoder::DecoderStreamErrorDelegate {
  public:
   ~NoopDecoderStreamErrorDelegate() override = default;

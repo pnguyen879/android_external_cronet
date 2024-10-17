@@ -66,8 +66,6 @@ std::unique_ptr<URLRequestContextConfig> CreateSimpleURLRequestContextConfig() {
   return URLRequestContextConfig::CreateURLRequestContextConfig(
       // Enable QUIC.
       true,
-      // QUIC User Agent ID.
-      "Default QUIC User Agent ID",
       // Enable SPDY.
       true,
       // Enable Brotli.
@@ -94,7 +92,7 @@ std::unique_ptr<URLRequestContextConfig> CreateSimpleURLRequestContextConfig() {
       // Enable Public Key Pinning bypass for local trust anchors.
       true,
       // Optional network thread priority.
-      absl::nullopt);
+      std::nullopt);
 }
 
 class NetworkTasksTest : public testing::Test {

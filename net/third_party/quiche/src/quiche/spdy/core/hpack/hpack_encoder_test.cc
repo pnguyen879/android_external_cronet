@@ -4,14 +4,25 @@
 
 #include "quiche/spdy/core/hpack/hpack_encoder.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "absl/strings/string_view.h"
 #include "quiche/http2/hpack/huffman/hpack_huffman_encoder.h"
 #include "quiche/http2/test_tools/http2_random.h"
+#include "quiche/common/platform/api/quiche_logging.h"
 #include "quiche/common/platform/api/quiche_test.h"
+#include "quiche/common/quiche_simple_arena.h"
+#include "quiche/spdy/core/hpack/hpack_constants.h"
+#include "quiche/spdy/core/hpack/hpack_entry.h"
+#include "quiche/spdy/core/hpack/hpack_header_table.h"
+#include "quiche/spdy/core/hpack/hpack_output_stream.h"
 #include "quiche/spdy/core/hpack/hpack_static_table.h"
-#include "quiche/spdy/core/spdy_simple_arena.h"
+#include "quiche/spdy/core/http2_header_block.h"
 
 namespace spdy {
 
@@ -267,7 +278,7 @@ class HpackEncoderTest
   size_t cookie_c_index_;
   size_t dynamic_table_insertions_;
 
-  SpdySimpleArena headers_storage_;
+  quiche::QuicheSimpleArena headers_storage_;
   std::vector<std::pair<absl::string_view, absl::string_view>>
       headers_observed_;
 
@@ -307,6 +318,39 @@ TEST_P(HpackEncoderTestWithDefaultStrategy, EncodeRepresentations) {
       headers_observed_,
       ElementsAre(Pair(":path", "/home"), Pair("cookie", "val1"),
                   Pair("cookie", "val2"), Pair("cookie", "val3"),
+                  Pair("accept", "text/html, text/plain,application/xml"),
+                  Pair("cookie", "val4"),
+                  Pair("withnul", absl::string_view("one\0two", 7))));
+  // Insertions and evictions have happened over the course of the test.
+  EXPECT_GE(kInitialDynamicTableSize, encoder_.GetDynamicTableSize());
+}
+
+TEST_P(HpackEncoderTestWithDefaultStrategy, WithoutCookieCrumbling) {
+  EXPECT_EQ(kInitialDynamicTableSize, encoder_.GetDynamicTableSize());
+  encoder_.SetHeaderListener(
+      [this](absl::string_view name, absl::string_view value) {
+        this->SaveHeaders(name, value);
+      });
+  encoder_.DisableCookieCrumbling();
+
+  const std::vector<std::pair<absl::string_view, absl::string_view>>
+      header_list = {{"cookie", "val1; val2;val3"},
+                     {":path", "/home"},
+                     {"accept", "text/html, text/plain,application/xml"},
+                     {"cookie", "val4"},
+                     {"withnul", absl::string_view("one\0two", 7)}};
+  ExpectNonIndexedLiteralWithNameIndex(peer_.table()->GetByName(":path"),
+                                       "/home");
+  ExpectIndexedLiteral(peer_.table()->GetByName("cookie"), "val1; val2;val3");
+  ExpectIndexedLiteral(peer_.table()->GetByName("accept"),
+                       "text/html, text/plain,application/xml");
+  ExpectIndexedLiteral(peer_.table()->GetByName("cookie"), "val4");
+  ExpectIndexedLiteral("withnul", absl::string_view("one\0two", 7));
+
+  CompareWithExpectedEncoding(header_list);
+  EXPECT_THAT(
+      headers_observed_,
+      ElementsAre(Pair(":path", "/home"), Pair("cookie", "val1; val2;val3"),
                   Pair("accept", "text/html, text/plain,application/xml"),
                   Pair("cookie", "val4"),
                   Pair("withnul", absl::string_view("one\0two", 7))));
@@ -429,6 +473,15 @@ TEST_P(HpackEncoderTest, CookieHeaderIsCrumbled) {
   ExpectIndex(DynamicIndexToWireIndex(cookie_a_index_));
   ExpectIndex(DynamicIndexToWireIndex(cookie_c_index_));
   ExpectIndexedLiteral(peer_.table()->GetByName("cookie"), "e=ff");
+
+  Http2HeaderBlock headers;
+  headers["cookie"] = "a=bb; c=dd; e=ff";
+  CompareWithExpectedEncoding(headers);
+}
+
+TEST_P(HpackEncoderTest, CookieHeaderIsNotCrumbled) {
+  encoder_.DisableCookieCrumbling();
+  ExpectIndexedLiteral(peer_.table()->GetByName("cookie"), "a=bb; c=dd; e=ff");
 
   Http2HeaderBlock headers;
   headers["cookie"] = "a=bb; c=dd; e=ff";

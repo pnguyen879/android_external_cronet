@@ -10,15 +10,23 @@
 
 #include "base/debug/debugging_buildflags.h"
 #include "base/debug/stack_trace.h"
+#include "base/immediate_crash.h"
 #include "base/logging.h"
 #include "base/process/kill.h"
 #include "base/process/process_handle.h"
 #include "base/profiler/stack_buffer.h"
 #include "base/profiler/stack_copier.h"
+#include "base/strings/cstring_view.h"
 #include "base/test/test_timeouts.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/multiprocess_func_list.h"
+
+#include "base/allocator/buildflags.h"
+#include "partition_alloc/partition_alloc.h"
+#if BUILDFLAG(USE_ALLOCATOR_SHIM)
+#include "partition_alloc/shim/allocator_shim.h"
+#endif
 
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 #include "base/test/multiprocess_test.h"
@@ -32,6 +40,7 @@ typedef MultiProcessTest StackTraceTest;
 #else
 typedef testing::Test StackTraceTest;
 #endif
+typedef testing::Test StackTraceDeathTest;
 
 #if !defined(__UCLIBC__) && !defined(_AIX)
 // StackTrace::OutputToStream() is not implemented under uclibc, nor AIX.
@@ -48,8 +57,7 @@ TEST_F(StackTraceTest, OutputToStream) {
   // ToString() should produce the same output.
   EXPECT_EQ(backtrace_message, trace.ToString());
 
-  size_t frames_found = 0;
-  const void* const* addresses = trace.Addresses(&frames_found);
+  span<const void* const> addresses = trace.addresses();
 
 #if defined(OFFICIAL_BUILD) && \
     ((BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_APPLE)) || BUILDFLAG(IS_FUCHSIA))
@@ -61,8 +69,8 @@ TEST_F(StackTraceTest, OutputToStream) {
         // ((BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_APPLE)) ||
         // BUILDFLAG(IS_FUCHSIA))
 
-  ASSERT_TRUE(addresses);
-  ASSERT_GT(frames_found, 5u) << "Too few frames found.";
+  ASSERT_GT(addresses.size(), 5u) << "Too few frames found.";
+  ASSERT_TRUE(addresses[0]);
 
   if (!StackTrace::WillSymbolizeToStreamForTesting())
     return;
@@ -98,13 +106,10 @@ TEST_F(StackTraceTest, OutputToStream) {
 TEST_F(StackTraceTest, TruncatedTrace) {
   StackTrace trace;
 
-  size_t count = 0;
-  trace.Addresses(&count);
-  ASSERT_LT(2u, count);
+  ASSERT_LT(2u, trace.addresses().size());
 
   StackTrace truncated(2);
-  truncated.Addresses(&count);
-  EXPECT_EQ(2u, count);
+  EXPECT_EQ(2u, truncated.addresses().size());
 }
 #endif  // !defined(OFFICIAL_BUILD) && !defined(NO_UNWIND_TABLES)
 
@@ -129,14 +134,14 @@ TEST_F(StackTraceTest, DebugPrintWithPrefixBacktrace) {
 // Make sure nullptr prefix doesn't crash. Output not examined, much
 // like the DebugPrintBacktrace test above.
 TEST_F(StackTraceTest, DebugPrintWithNullPrefixBacktrace) {
-  StackTrace().PrintWithPrefix(nullptr);
+  StackTrace().PrintWithPrefix({});
 }
 
 // Test OutputToStreamWithPrefix, mainly to make sure it doesn't
 // crash. Any "real" stack trace testing happens above.
 TEST_F(StackTraceTest, DebugOutputToStreamWithPrefix) {
   StackTrace trace;
-  const char* prefix_string = "[test]";
+  cstring_view prefix_string = "[test]";
   std::ostringstream os;
   trace.OutputToStreamWithPrefix(&os, prefix_string);
   std::string backtrace_message = os.str();
@@ -150,38 +155,99 @@ TEST_F(StackTraceTest, DebugOutputToStreamWithPrefix) {
 TEST_F(StackTraceTest, DebugOutputToStreamWithNullPrefix) {
   StackTrace trace;
   std::ostringstream os;
-  trace.OutputToStreamWithPrefix(&os, nullptr);
-  trace.ToStringWithPrefix(nullptr);
+  trace.OutputToStreamWithPrefix(&os, {});
+  trace.ToStringWithPrefix({});
 }
 
 #endif  // !defined(__UCLIBC__) && !defined(_AIX)
 
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_ANDROID)
-#if !BUILDFLAG(IS_IOS)
-static char* newArray() {
-  // Clang warns about the mismatched new[]/delete if they occur in the same
-  // function.
-  return new char[10];
+// Since Mac's base::debug::StackTrace().Print() is not malloc-free, skip
+// StackDumpSignalHandlerIsMallocFree if BUILDFLAG(IS_MAC).
+#if BUILDFLAG(USE_ALLOCATOR_SHIM) && !BUILDFLAG(IS_MAC)
+
+namespace {
+
+// ImmediateCrash if a signal handler incorrectly uses malloc().
+// In an actual implementation, this could cause infinite recursion into the
+// signal handler or other problems. Because malloc() is not guaranteed to be
+// async signal safe.
+void* BadMalloc(const allocator_shim::AllocatorDispatch*, size_t, void*) {
+  base::ImmediateCrash();
 }
 
-MULTIPROCESS_TEST_MAIN(MismatchedMallocChildProcess) {
-  char* pointer = newArray();
-  delete pointer;
-  return 2;
+void* BadCalloc(const allocator_shim::AllocatorDispatch*,
+                size_t,
+                size_t,
+                void* context) {
+  base::ImmediateCrash();
 }
 
-// Regression test for StackDumpingSignalHandler async-signal unsafety.
-// Combined with tcmalloc's debugallocation, that signal handler
-// and e.g. mismatched new[]/delete would cause a hang because
-// of re-entering malloc.
-TEST_F(StackTraceTest, AsyncSignalUnsafeSignalHandlerHang) {
-  Process child = SpawnChild("MismatchedMallocChildProcess");
-  ASSERT_TRUE(child.IsValid());
-  int exit_code;
-  ASSERT_TRUE(
-      child.WaitForExitWithTimeout(TestTimeouts::action_timeout(), &exit_code));
+void* BadAlignedAlloc(const allocator_shim::AllocatorDispatch*,
+                      size_t,
+                      size_t,
+                      void*) {
+  base::ImmediateCrash();
 }
-#endif  // !BUILDFLAG(IS_IOS)
+
+void* BadAlignedRealloc(const allocator_shim::AllocatorDispatch*,
+                        void*,
+                        size_t,
+                        size_t,
+                        void*) {
+  base::ImmediateCrash();
+}
+
+void* BadRealloc(const allocator_shim::AllocatorDispatch*,
+                 void*,
+                 size_t,
+                 void*) {
+  base::ImmediateCrash();
+}
+
+void BadFree(const allocator_shim::AllocatorDispatch*, void*, void*) {
+  base::ImmediateCrash();
+}
+
+allocator_shim::AllocatorDispatch g_bad_malloc_dispatch = {
+    &BadMalloc,         /* alloc_function */
+    &BadMalloc,         /* alloc_unchecked_function */
+    &BadCalloc,         /* alloc_zero_initialized_function */
+    &BadAlignedAlloc,   /* alloc_aligned_function */
+    &BadRealloc,        /* realloc_function */
+    &BadFree,           /* free_function */
+    nullptr,            /* get_size_estimate_function */
+    nullptr,            /* good_size_function */
+    nullptr,            /* claimed_address_function */
+    nullptr,            /* batch_malloc_function */
+    nullptr,            /* batch_free_function */
+    nullptr,            /* free_definite_size_function */
+    nullptr,            /* try_free_default_function */
+    &BadAlignedAlloc,   /* aligned_malloc_function */
+    &BadAlignedRealloc, /* aligned_realloc_function */
+    &BadFree,           /* aligned_free_function */
+    nullptr,            /* next */
+};
+
+}  // namespace
+
+// Regression test for StackDumpSignalHandler async-signal unsafety.
+// Since malloc() is not guaranteed to be async signal safe, it is not allowed
+// to use malloc() inside StackDumpSignalHandler().
+TEST_F(StackTraceDeathTest, StackDumpSignalHandlerIsMallocFree) {
+  EXPECT_DEATH_IF_SUPPORTED(
+      [] {
+        // On Android, base::debug::EnableInProcessStackDumping() does not
+        // change any actions taken by signals to be StackDumpSignalHandler. So
+        // the StackDumpSignalHandlerIsMallocFree test doesn't work on Android.
+        EnableInProcessStackDumping();
+        allocator_shim::InsertAllocatorDispatch(&g_bad_malloc_dispatch);
+        // Raise SIGSEGV to invoke StackDumpSignalHandler().
+        kill(getpid(), SIGSEGV);
+      }(),
+      "\\[end of stack trace\\]\n");
+}
+#endif  // BUILDFLAG(USE_ALLOCATOR_SHIM)
 
 namespace {
 
@@ -284,9 +350,9 @@ NOINLINE static std::unique_ptr<StackBuffer> CopyCurrentStackAndRewritePointers(
 }
 
 template <size_t Depth>
-NOINLINE void ExpectStackFramePointers(const void** frames,
-                                       size_t max_depth,
-                                       bool copy_stack) {
+NOINLINE NOOPT void ExpectStackFramePointers(const void** frames,
+                                             size_t max_depth,
+                                             bool copy_stack) {
 code_start:
   // Calling __builtin_frame_address() forces compiler to emit
   // frame pointers, even if they are not enabled.
@@ -302,9 +368,9 @@ code_end:
 }
 
 template <>
-NOINLINE void ExpectStackFramePointers<1>(const void** frames,
-                                          size_t max_depth,
-                                          bool copy_stack) {
+NOINLINE NOOPT void ExpectStackFramePointers<1>(const void** frames,
+                                                size_t max_depth,
+                                                bool copy_stack) {
 code_start:
   // Calling __builtin_frame_address() forces compiler to emit
   // frame pointers, even if they are not enabled.

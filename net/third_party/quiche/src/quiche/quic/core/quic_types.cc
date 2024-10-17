@@ -157,6 +157,7 @@ std::string QuicFrameTypeToString(QuicFrameType t) {
     RETURN_STRING_LITERAL(NEW_TOKEN_FRAME)
     RETURN_STRING_LITERAL(RETIRE_CONNECTION_ID_FRAME)
     RETURN_STRING_LITERAL(ACK_FREQUENCY_FRAME)
+    RETURN_STRING_LITERAL(RESET_STREAM_AT_FRAME)
     RETURN_STRING_LITERAL(NUM_FRAME_TYPES)
   }
   return absl::StrCat("Unknown(", static_cast<int>(t), ")");
@@ -417,7 +418,8 @@ std::ostream& operator<<(std::ostream& os, const KeyUpdateReason reason) {
 }
 
 bool operator==(const ParsedClientHello& a, const ParsedClientHello& b) {
-  return a.sni == b.sni && a.uaid == b.uaid && a.alpns == b.alpns &&
+  return a.sni == b.sni && a.uaid == b.uaid &&
+         a.supported_groups == b.supported_groups && a.alpns == b.alpns &&
          a.retry_token == b.retry_token &&
          a.resumption_attempted == b.resumption_attempted &&
          a.early_data_attempted == b.early_data_attempted;
@@ -427,6 +429,10 @@ std::ostream& operator<<(std::ostream& os,
                          const ParsedClientHello& parsed_chlo) {
   os << "{ sni:" << parsed_chlo.sni << ", uaid:" << parsed_chlo.uaid
      << ", alpns:" << quiche::PrintElements(parsed_chlo.alpns)
+     << ", supported_groups:"
+     << quiche::PrintElements(parsed_chlo.supported_groups)
+     << ", resumption_attempted:" << parsed_chlo.resumption_attempted
+     << ", early_data_attempted:" << parsed_chlo.early_data_attempted
      << ", len(retry_token):" << parsed_chlo.retry_token.size() << " }";
   return os;
 }
@@ -440,8 +446,8 @@ QUICHE_EXPORT std::string QuicPriorityTypeToString(QuicPriorityType type) {
   }
   return "(unknown)";
 }
-QUIC_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
-                                             QuicPriorityType type) {
+QUICHE_EXPORT std::ostream& operator<<(std::ostream& os,
+                                       QuicPriorityType type) {
   os << QuicPriorityTypeToString(type);
   return os;
 }

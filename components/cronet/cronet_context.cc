@@ -25,6 +25,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/metrics/statistics_recorder.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
@@ -45,6 +46,7 @@
 #include "net/cert/caching_cert_verifier.h"
 #include "net/cert/cert_verifier.h"
 #include "net/cert/x509_certificate.h"
+#include "net/cookies/cookie_inclusion_status.h"
 #include "net/cookies/cookie_monster.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/first_party_sets/first_party_set_metadata.h"
@@ -131,9 +133,12 @@ class BasicNetworkDelegate : public net::NetworkDelegateImpl {
     return false;
   }
 
-  bool OnCanSetCookie(const net::URLRequest& request,
-                      const net::CanonicalCookie& cookie,
-                      net::CookieOptions* options) override {
+  bool OnCanSetCookie(
+      const net::URLRequest& request,
+      const net::CanonicalCookie& cookie,
+      net::CookieOptions* options,
+      const net::FirstPartySetMetadata& first_party_set_metadata,
+      net::CookieInclusionStatus* inclusion_status) override {
     // Disallow saving cookies by default.
     return false;
   }
@@ -196,7 +201,6 @@ CronetContext::CronetContext(
     : bidi_stream_detect_broken_connection_(
           context_config->bidi_stream_detect_broken_connection),
       heartbeat_interval_(context_config->heartbeat_interval),
-      enable_telemetry_(context_config->enable_telemetry),
       default_load_flags_(
           net::LOAD_NORMAL |
           (context_config->load_disable_cache ? net::LOAD_DISABLE_CACHE : 0)),
@@ -341,15 +345,6 @@ bool CronetContext::NetworkTasks::URLRequestContextExistsForTesting(
   return contexts_.contains(network);
 }
 
-void CronetContext::NetworkTasks::InitializeNQEPrefs() const {
-  DCHECK_CALLED_ON_VALID_THREAD(network_thread_checker_);
-  // Initializing |network_qualities_prefs_manager_| may post a callback to
-  // |this|. So, |network_qualities_prefs_manager_| should be initialized after
-  // |callback_| has been initialized.
-  DCHECK(is_default_context_initialized_);
-  cronet_prefs_manager_->SetupNqePersistence(network_quality_estimator_.get());
-}
-
 std::unique_ptr<net::URLRequestContext>
 CronetContext::NetworkTasks::BuildDefaultURLRequestContext(
     std::unique_ptr<net::ProxyConfigService> proxy_config_service) {
@@ -475,7 +470,7 @@ void CronetContext::NetworkTasks::SetSharedURLRequestContextConfig(
     // Add the host pinning.
     context->transport_security_state()->AddHPKP(
         pkp->host, pkp->expiration_date, pkp->include_subdomains,
-        pkp->pin_hashes, GURL::EmptyGURL());
+        pkp->pin_hashes);
   }
 
   context->transport_security_state()
@@ -533,13 +528,8 @@ void CronetContext::NetworkTasks::Initialize(
 
   if (context_config_->enable_network_quality_estimator &&
       cronet_prefs_manager_) {
-    // TODO(crbug.com/758401): Provide a better way for to configure the NQE
-    // for testing.. Currently, tests rely on posting a task to this network
-    // thread and hope it executes before the one below does.
-    network_task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(&CronetContext::NetworkTasks::InitializeNQEPrefs,
-                       base::Unretained(this)));
+    cronet_prefs_manager_->SetupNqePersistence(
+        network_quality_estimator_.get());
   }
 
   while (!tasks_waiting_for_context_.empty()) {
@@ -683,6 +673,24 @@ void CronetContext::StopNetLog() {
   PostTaskToNetworkThread(
       FROM_HERE, base::BindOnce(&CronetContext::NetworkTasks::StopNetLog,
                                 base::Unretained(network_tasks_)));
+}
+
+void CronetContext::FlushWritePropertiesForTesting() {
+  base::WaitableEvent wait_for_callback;
+  network_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](NetworkTasks* network_tasks, base::OnceClosure callback) {
+            network_tasks
+                ->GetURLRequestContext(net::handles::kInvalidNetworkHandle)
+                ->http_server_properties()
+                ->FlushWritePropertiesForTesting(  // IN-TEST
+                    std::move(callback));
+          },
+          network_tasks_,
+          base::BindOnce(&base::WaitableEvent::Signal,
+                         base::Unretained(&wait_for_callback))));
+  wait_for_callback.Wait();
 }
 
 void CronetContext::MaybeDestroyURLRequestContext(

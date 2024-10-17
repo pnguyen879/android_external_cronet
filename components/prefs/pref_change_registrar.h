@@ -36,6 +36,10 @@ class COMPONENTS_PREFS_EXPORT PrefChangeRegistrar final : public PrefObserver {
   // than once as long as the value of |service| doesn't change.
   void Init(PrefService* service);
 
+  // Removes all observers and clears the reference to `PrefService`.
+  // `Init` must be called before adding or removing any observers.
+  void Reset();
+
   // Adds a pref observer for the specified pref |path| and |obs| observer
   // object. All registered observers will be automatically unregistered
   // when the registrar's destructor is called.
@@ -74,7 +78,7 @@ class COMPONENTS_PREFS_EXPORT PrefChangeRegistrar final : public PrefObserver {
   using ObserverMap = std::map<std::string, NamedChangeCallback>;
 
   ObserverMap observers_;
-  raw_ptr<PrefService, DanglingUntriaged> service_;
+  raw_ptr<PrefService, AcrossTasksDanglingUntriaged> service_;
 };
 
 #endif  // COMPONENTS_PREFS_PREF_CHANGE_REGISTRAR_H_

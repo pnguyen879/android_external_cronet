@@ -4,7 +4,7 @@
 
 #include "base/android/unguessable_token_android.h"
 
-#include "base/base_jni_headers/UnguessableToken_jni.h"
+#include "base/base_jni/UnguessableToken_jni.h"
 
 namespace base {
 namespace android {
@@ -20,7 +20,7 @@ ScopedJavaLocalRef<jobject> UnguessableTokenAndroid::Create(
                                       static_cast<jlong>(low));
 }
 
-absl::optional<base::UnguessableToken>
+std::optional<base::UnguessableToken>
 UnguessableTokenAndroid::FromJavaUnguessableToken(
     JNIEnv* env,
     const JavaRef<jobject>& token) {

@@ -17,9 +17,9 @@ namespace quic {
 
 // This class serializes instructions for transmission on the encoder stream.
 // Serialized instructions are buffered until Flush() is called.
-class QUIC_EXPORT_PRIVATE QpackEncoderStreamSender {
+class QUICHE_EXPORT QpackEncoderStreamSender {
  public:
-  QpackEncoderStreamSender();
+  QpackEncoderStreamSender(HuffmanEncoding huffman_encoding);
   QpackEncoderStreamSender(const QpackEncoderStreamSender&) = delete;
   QpackEncoderStreamSender& operator=(const QpackEncoderStreamSender&) = delete;
 

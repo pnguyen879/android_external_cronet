@@ -1,3 +1,4 @@
+
 // © 2016 and later: Unicode, Inc. and others.
 // License & terms of use: http://www.unicode.org/copyright.html
 /******************************************************************************
@@ -6,7 +7,7 @@
 *   Corporation and others.  All Rights Reserved.
 *
 *******************************************************************************
-*   file name:  stubdata.c
+*   file name:  stubdata.cpp
 *
 *   Define initialized data that will build into a valid, but empty
 *   ICU data library.  Used to bootstrap the ICU build, which has these
@@ -19,9 +20,7 @@
 *   for running the data building tools.
 *
 */
-
 #include "ucmndata.h"
-
 extern "C" U_EXPORT const ICU_Data_Header U_ICUDATA_ENTRY_POINT = {
     {            /* DataHeader */
         {            /* MappedData */
@@ -32,13 +31,11 @@ extern "C" U_EXPORT const ICU_Data_Header U_ICUDATA_ENTRY_POINT = {
         {            /*UDataInfo   */
             sizeof(UDataInfo),      /* size        */
             0,                      /* reserved    */
-
 #if U_IS_BIG_ENDIAN
             1,
 #else
             0,
 #endif
-
             U_CHARSET_FAMILY,
             sizeof(UChar),
             0,               /* reserved      */
@@ -58,5 +55,3 @@ extern "C" U_EXPORT const ICU_Data_Header U_ICUDATA_ENTRY_POINT = {
 /*        }  */
     }
 };
-
-

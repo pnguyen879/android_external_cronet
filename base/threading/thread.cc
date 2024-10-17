@@ -22,16 +22,17 @@
 #include "base/task/sequence_manager/sequence_manager_impl.h"
 #include "base/task/sequence_manager/task_queue.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/third_party/dynamic_annotations/dynamic_annotations.h"
 #include "base/threading/thread_id_name_manager.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/types/pass_key.h"
 #include "build/build_config.h"
 #include "third_party/abseil-cpp/absl/base/attributes.h"
+#include "third_party/abseil-cpp/absl/base/dynamic_annotations.h"
 
 #if (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#include <optional>
+
 #include "base/files/file_descriptor_watcher_posix.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -93,16 +94,15 @@ class SequenceManagerThreadDelegate : public Thread::Delegate {
     return sequence_manager_->GetTaskRunner();
   }
 
-  void BindToCurrentThread(TimerSlack timer_slack) override {
+  void BindToCurrentThread() override {
     sequence_manager_->BindToMessagePump(
         std::move(message_pump_factory_).Run());
-    sequence_manager_->SetTimerSlack(timer_slack);
   }
 
  private:
   std::unique_ptr<sequence_manager::internal::SequenceManagerImpl>
       sequence_manager_;
-  scoped_refptr<sequence_manager::TaskQueue> default_task_queue_;
+  sequence_manager::TaskQueue::Handle default_task_queue_;
   OnceCallback<std::unique_ptr<MessagePump>()> message_pump_factory_;
 };
 
@@ -118,7 +118,6 @@ Thread::Options::Options(ThreadType thread_type) : thread_type(thread_type) {}
 Thread::Options::Options(Options&& other)
     : message_pump_type(std::move(other.message_pump_type)),
       delegate(std::move(other.delegate)),
-      timer_slack(std::move(other.timer_slack)),
       message_pump_factory(std::move(other.message_pump_factory)),
       stack_size(std::move(other.stack_size)),
       thread_type(std::move(other.thread_type)),
@@ -131,7 +130,6 @@ Thread::Options& Thread::Options::operator=(Thread::Options&& other) {
 
   message_pump_type = std::move(other.message_pump_type);
   delegate = std::move(other.delegate);
-  timer_slack = std::move(other.timer_slack);
   message_pump_factory = std::move(other.message_pump_factory);
   stack_size = std::move(other.stack_size);
   thread_type = std::move(other.thread_type);
@@ -188,8 +186,6 @@ bool Thread::StartWithOptions(Options options) {
   id_ = kInvalidThreadId;
 
   SetThreadWasQuitProperly(false);
-
-  timer_slack_ = options.timer_slack;
 
   if (options.delegate) {
     DCHECK(!options.message_pump_factory);
@@ -372,12 +368,12 @@ void Thread::ThreadMain() {
 
   // Complete the initialization of our Thread object.
   PlatformThread::SetName(name_.c_str());
-  ANNOTATE_THREAD_NAME(name_.c_str());  // Tell the name to race detector.
+  ABSL_ANNOTATE_THREAD_NAME(name_.c_str());  // Tell the name to race detector.
 
   // Lazily initialize the |message_loop| so that it can run on this thread.
   DCHECK(delegate_);
   // This binds CurrentThread and SingleThreadTaskRunner::CurrentDefaultHandle.
-  delegate_->BindToCurrentThread(timer_slack_);
+  delegate_->BindToCurrentThread();
   DCHECK(CurrentThread::Get());
   DCHECK(SingleThreadTaskRunner::HasCurrentDefault());
 #if (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)

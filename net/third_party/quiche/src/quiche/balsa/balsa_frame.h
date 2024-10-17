@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -17,9 +18,9 @@
 #include "quiche/balsa/framer_interface.h"
 #include "quiche/balsa/http_validation_policy.h"
 #include "quiche/balsa/noop_balsa_visitor.h"
-#include "quiche/common/platform/api/quiche_bug_tracker.h"
 #include "quiche/common/platform/api/quiche_export.h"
 #include "quiche/common/platform/api/quiche_flag_utils.h"
+#include "quiche/common/platform/api/quiche_logging.h"
 
 namespace quiche {
 
@@ -54,8 +55,6 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
         visitor_(&do_nothing_visitor_),
         chunk_length_remaining_(0),
         content_length_remaining_(0),
-        last_slash_n_loc_(nullptr),
-        last_recorded_slash_n_loc_(nullptr),
         last_slash_n_idx_(0),
         term_chars_(0),
         parse_state_(BalsaFrameEnums::READING_HEADER_AND_FIRSTLINE),
@@ -64,7 +63,6 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
         headers_(nullptr),
         start_of_trailer_line_(0),
         trailer_length_(0),
-        trailer_(nullptr),
         invalid_chars_level_(InvalidCharsLevel::kOff),
         use_interim_headers_callback_(false) {}
 
@@ -103,22 +101,16 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
     }
   }
 
-  // The method set_balsa_trailer() clears `trailer` and attaches it to the
-  // framer.  This is a required step before the framer will process any input
-  // message data.  To detach the trailer object from the framer, use
-  // set_balsa_trailer(nullptr).
-  void set_balsa_trailer(BalsaHeaders* trailer) {
-    if (trailer != nullptr && is_request()) {
+  // Enables the framer to process trailers and deliver them in
+  // `BalsaVisitorInterface::OnTrailers()`. If this method is not called and
+  // trailers are received, only minimal trailers parsing will be performed
+  // (just enough to advance past trailers).
+  void EnableTrailers() {
+    if (is_request()) {
       QUICHE_CODE_COUNT(balsa_trailer_in_request);
     }
-
-    if (trailer_ != trailer) {
-      trailer_ = trailer;
-    }
-    if (trailer_ != nullptr) {
-      // Clear the trailer if it is non-null, even if the new trailer is
-      // the same as the old.
-      trailer_->Clear();
+    if (trailers_ == nullptr) {
+      trailers_ = std::make_unique<BalsaHeaders>();
     }
   }
 
@@ -141,10 +133,10 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
     return invalid_chars_level_ == InvalidCharsLevel::kError;
   }
 
-  void set_http_validation_policy(const quiche::HttpValidationPolicy& policy) {
+  void set_http_validation_policy(const HttpValidationPolicy& policy) {
     http_validation_policy_ = policy;
   }
-  const quiche::HttpValidationPolicy& http_validation_policy() const {
+  const HttpValidationPolicy& http_validation_policy() const {
     return http_validation_policy_;
   }
 
@@ -179,9 +171,6 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
   const BalsaHeaders* headers() const { return headers_; }
   BalsaHeaders* mutable_headers() { return headers_; }
 
-  const BalsaHeaders* trailer() const { return trailer_; }
-  BalsaHeaders* mutable_trailer() { return trailer_; }
-
   size_t BytesSafeToSplice() const;
   void BytesSpliced(size_t bytes_spliced);
 
@@ -202,6 +191,13 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
   // ContinueHeaderDone(), even when set_continue_headers() is called.
   void set_use_interim_headers_callback(bool set) {
     use_interim_headers_callback_ = set;
+  }
+
+  // If enabled, parse the available portion of headers even on a
+  // HEADERS_TOO_LONG error, so that that portion of headers is available to the
+  // error handler. Generally results in the last header being truncated.
+  void set_parse_truncated_headers_even_when_headers_too_long(bool set) {
+    parse_truncated_headers_even_when_headers_too_long_ = set;
   }
 
  protected:
@@ -274,6 +270,8 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
   void HandleError(BalsaFrameEnums::ErrorCode error_code);
   void HandleWarning(BalsaFrameEnums::ErrorCode error_code);
 
+  void HandleHeadersTooLongError();
+
   bool last_char_was_slash_r_;
   bool saw_non_newline_char_;
   bool start_was_space_;
@@ -288,8 +286,6 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
   BalsaVisitorInterface* visitor_;
   size_t chunk_length_remaining_;
   size_t content_length_remaining_;
-  const char* last_slash_n_loc_;
-  const char* last_recorded_slash_n_loc_;
   size_t last_slash_n_idx_;
   uint32_t term_chars_;
   BalsaFrameEnums::ParseState parse_state_;
@@ -305,16 +301,21 @@ class QUICHE_EXPORT BalsaFrame : public FramerInterface {
   Lines trailer_lines_;
   size_t start_of_trailer_line_;
   size_t trailer_length_;
-  BalsaHeaders* trailer_;  // Does not own and is not reset to nullptr
-                           // in Reset().
+
+  // Cleared but not reset to nullptr in Reset().
+  std::unique_ptr<BalsaHeaders> trailers_;
+
   InvalidCharsLevel invalid_chars_level_;  // This is not reset in Reset().
 
-  quiche::HttpValidationPolicy http_validation_policy_;
+  HttpValidationPolicy http_validation_policy_;
 
   // This is not reset in Reset().
   // TODO(b/68801833): Default-enable and then deprecate this field, along with
   // set_continue_headers().
   bool use_interim_headers_callback_;
+
+  // This is not reset in Reset().
+  bool parse_truncated_headers_even_when_headers_too_long_ = false;
 };
 
 }  // namespace quiche

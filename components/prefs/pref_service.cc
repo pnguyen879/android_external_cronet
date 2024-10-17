@@ -16,6 +16,7 @@
 #include "base/functional/bind.h"
 #include "base/json/values_util.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram.h"
 #include "base/notreached.h"
@@ -205,7 +206,7 @@ const std::string& PrefService::GetString(base::StringPiece path) const {
 
 base::FilePath PrefService::GetFilePath(base::StringPiece path) const {
   const base::Value& value = GetValue(path);
-  absl::optional<base::FilePath> result = base::ValueToFilePath(value);
+  std::optional<base::FilePath> result = base::ValueToFilePath(value);
   DCHECK(result);
   return *result;
 }
@@ -240,6 +241,22 @@ base::Value::Dict PrefService::GetPreferenceValues(
     }
   }
   return out;
+}
+
+std::vector<PrefService::PreferenceValueAndStore>
+PrefService::GetPreferencesValueAndStore() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  std::vector<PreferenceValueAndStore> result;
+  for (const auto& it : *pref_registry_) {
+    auto* preference = FindPreference(it.first);
+    CHECK(preference);
+    PreferenceValueAndStore pref_data{
+        it.first, preference->GetValue()->Clone(),
+        pref_value_store_->ControllingPrefStoreForPref(it.first)};
+    result.emplace_back(std::move(pref_data));
+  }
+  return result;
 }
 
 const PrefService::Preference* PrefService::FindPreference(
@@ -304,7 +321,7 @@ bool PrefService::IsUserModifiablePreference(
 
 const base::Value& PrefService::GetValue(base::StringPiece path) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return *GetPreferenceValueChecked(path);
+  return *GetPreferenceValue(path);
 }
 
 const base::Value::Dict& PrefService::GetDict(base::StringPiece path) const {
@@ -334,7 +351,8 @@ const base::Value* PrefService::GetUserPrefValue(
     return nullptr;
 
   if (value->type() != pref->GetType()) {
-    NOTREACHED() << "Pref value type doesn't match registered type.";
+    DUMP_WILL_BE_NOTREACHED_NORETURN()
+        << "Pref value type doesn't match registered type.";
     return nullptr;
   }
 
@@ -427,7 +445,7 @@ void PrefService::SetDouble(const std::string& path, double value) {
   SetUserPrefValue(path, base::Value(value));
 }
 
-void PrefService::SetString(const std::string& path, const std::string& value) {
+void PrefService::SetString(const std::string& path, base::StringPiece value) {
   SetUserPrefValue(path, base::Value(value));
 }
 
@@ -450,7 +468,7 @@ void PrefService::SetInt64(const std::string& path, int64_t value) {
 
 int64_t PrefService::GetInt64(const std::string& path) const {
   const base::Value& value = GetValue(path);
-  absl::optional<int64_t> integer = base::ValueToInt64(value);
+  std::optional<int64_t> integer = base::ValueToInt64(value);
   DCHECK(integer);
   return integer.value_or(0);
 }
@@ -475,7 +493,7 @@ void PrefService::SetTime(const std::string& path, base::Time value) {
 
 base::Time PrefService::GetTime(const std::string& path) const {
   const base::Value& value = GetValue(path);
-  absl::optional<base::Time> time = base::ValueToTime(value);
+  std::optional<base::Time> time = base::ValueToTime(value);
   DCHECK(time);
   return time.value_or(base::Time());
 }
@@ -486,7 +504,7 @@ void PrefService::SetTimeDelta(const std::string& path, base::TimeDelta value) {
 
 base::TimeDelta PrefService::GetTimeDelta(const std::string& path) const {
   const base::Value& value = GetValue(path);
-  absl::optional<base::TimeDelta> time_delta = base::ValueToTimeDelta(value);
+  std::optional<base::TimeDelta> time_delta = base::ValueToTimeDelta(value);
   DCHECK(time_delta);
   return time_delta.value_or(base::TimeDelta());
 }
@@ -573,7 +591,7 @@ PrefService::Preference::Preference(const PrefService* service,
       pref_service_(service) {}
 
 const base::Value* PrefService::Preference::GetValue() const {
-  return pref_service_->GetPreferenceValueChecked(name_);
+  return pref_service_->GetPreferenceValue(name_);
 }
 
 const base::Value* PrefService::Preference::GetRecommendedValue() const {
@@ -644,44 +662,43 @@ const base::Value* PrefService::GetPreferenceValue(
     base::StringPiece path) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // TODO(battre): This is a check for crbug.com/435208. After analyzing some
-  // crash dumps it looks like the PrefService is accessed even though it has
-  // been cleared already.
-  CHECK(pref_registry_);
-  CHECK(pref_registry_->defaults());
-  CHECK(pref_value_store_);
-
   const base::Value* default_value = nullptr;
-  if (!pref_registry_->defaults()->GetValue(path, &default_value))
-    return nullptr;
+  CHECK(pref_registry_->defaults()->GetValue(path, &default_value))
+      << "Trying to access an unregistered pref: " << path;
+  CHECK(default_value);
+  const base::Value::Type default_type = default_value->type();
 
   const base::Value* found_value = nullptr;
-  base::Value::Type default_type = default_value->type();
-  if (!pref_value_store_->GetValue(path, default_type, &found_value)) {
-    // Every registered preference has at least a default value.
-    NOTREACHED() << "no valid value found for registered pref " << path;
-    return default_value;
-  }
-
-  DCHECK_EQ(found_value->type(), default_type);
+  // GetValue shouldn't fail because every registered preference has at least a
+  // default value.
+  CHECK(pref_value_store_->GetValue(path, default_type, &found_value));
+  CHECK(found_value);
+  // The type is expected to match here thanks to a verification in
+  // PrefValueStore::GetValueFromStoreWithType which discards polluted values
+  // (and we should at least get a matching type from the default store if no
+  // other store has a valid value+type).
+  CHECK_EQ(found_value->type(), default_type);
   return found_value;
-}
-
-const base::Value* PrefService::GetPreferenceValueChecked(
-    base::StringPiece path) const {
-  const base::Value* value = GetPreferenceValue(path);
-  DCHECK(value) << "Trying to read an unregistered pref: " << path;
-  return value;
 }
 
 #if BUILDFLAG(IS_CHROMEOS_ASH)
 void PrefService::SetStandaloneBrowserPref(const std::string& path,
                                            const base::Value& value) {
+  if (!standalone_browser_pref_store_) {
+    LOG(WARNING) << "Failure to set value of " << path
+                 << " in standalone browser store";
+    return;
+  }
   standalone_browser_pref_store_->SetValue(
       path, value.Clone(), WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
 }
 
 void PrefService::RemoveStandaloneBrowserPref(const std::string& path) {
+  if (!standalone_browser_pref_store_) {
+    LOG(WARNING) << "Failure to remove value of " << path
+                 << " in standalone browser store";
+    return;
+  }
   standalone_browser_pref_store_->RemoveValue(
       path, WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
 }

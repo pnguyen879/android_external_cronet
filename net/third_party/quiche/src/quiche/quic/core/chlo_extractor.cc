@@ -12,6 +12,7 @@
 #include "quiche/quic/core/crypto/quic_decrypter.h"
 #include "quiche/quic/core/crypto/quic_encrypter.h"
 #include "quiche/quic/core/frames/quic_ack_frequency_frame.h"
+#include "quiche/quic/core/frames/quic_reset_stream_at_frame.h"
 #include "quiche/quic/core/quic_framer.h"
 #include "quiche/quic/core/quic_types.h"
 #include "quiche/quic/core/quic_utils.h"
@@ -33,7 +34,6 @@ class ChloFramerVisitor : public QuicFramerVisitorInterface,
   void OnError(QuicFramer* /*framer*/) override {}
   bool OnProtocolVersionMismatch(ParsedQuicVersion version) override;
   void OnPacket() override {}
-  void OnPublicResetPacket(const QuicPublicResetPacket& /*packet*/) override {}
   void OnVersionNegotiationPacket(
       const QuicVersionNegotiationPacket& /*packet*/) override {}
   void OnRetryPacket(QuicConnectionId /*original_connection_id*/,
@@ -58,7 +58,7 @@ class ChloFramerVisitor : public QuicFramerVisitorInterface,
   bool OnAckTimestamp(QuicPacketNumber packet_number,
                       QuicTime timestamp) override;
   bool OnAckFrameEnd(QuicPacketNumber start,
-                     const absl::optional<QuicEcnCounts>& ecn_counts) override;
+                     const std::optional<QuicEcnCounts>& ecn_counts) override;
   bool OnStopWaitingFrame(const QuicStopWaitingFrame& frame) override;
   bool OnPingFrame(const QuicPingFrame& frame) override;
   bool OnRstStreamFrame(const QuicRstStreamFrame& frame) override;
@@ -79,6 +79,7 @@ class ChloFramerVisitor : public QuicFramerVisitorInterface,
   bool OnMessageFrame(const QuicMessageFrame& frame) override;
   bool OnHandshakeDoneFrame(const QuicHandshakeDoneFrame& frame) override;
   bool OnAckFrequencyFrame(const QuicAckFrequencyFrame& farme) override;
+  bool OnResetStreamAtFrame(const QuicResetStreamAtFrame& frame) override;
   void OnPacketComplete() override {}
   bool IsValidStatelessResetToken(
       const StatelessResetToken& token) const override;
@@ -208,6 +209,11 @@ bool ChloFramerVisitor::OnAckFrameStart(QuicPacketNumber /*largest_acked*/,
   return true;
 }
 
+bool ChloFramerVisitor::OnResetStreamAtFrame(
+    const QuicResetStreamAtFrame& /*frame*/) {
+  return true;
+}
+
 bool ChloFramerVisitor::OnAckRange(QuicPacketNumber /*start*/,
                                    QuicPacketNumber /*end*/) {
   return true;
@@ -220,7 +226,7 @@ bool ChloFramerVisitor::OnAckTimestamp(QuicPacketNumber /*packet_number*/,
 
 bool ChloFramerVisitor::OnAckFrameEnd(
     QuicPacketNumber /*start*/,
-    const absl::optional<QuicEcnCounts>& /*ecn_counts*/) {
+    const std::optional<QuicEcnCounts>& /*ecn_counts*/) {
   return true;
 }
 

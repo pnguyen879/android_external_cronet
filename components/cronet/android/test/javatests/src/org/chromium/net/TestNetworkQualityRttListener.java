@@ -4,13 +4,11 @@
 
 package org.chromium.net;
 
-import static junit.framework.Assert.assertEquals;
+import static com.google.common.truth.Truth.assertThat;
 
-import android.net.http.NetworkQualityRttListener;
 import android.os.ConditionVariable;
 import android.util.SparseIntArray;
 
-import java.time.Instant;
 import java.util.concurrent.Executor;
 
 class TestNetworkQualityRttListener extends NetworkQualityRttListener {
@@ -37,7 +35,7 @@ class TestNetworkQualityRttListener extends NetworkQualityRttListener {
     }
 
     @Override
-    public void onRttObservation(int rttMs, Instant when, int source) {
+    public void onRttObservation(int rttMs, long when, int source) {
         synchronized (mLock) {
             if (source == 0) {
                 // Source 0 indicates that the RTT was observed at the URL request layer.
@@ -51,7 +49,7 @@ class TestNetworkQualityRttListener extends NetworkQualityRttListener {
                 mExecutorThread = Thread.currentThread();
             }
             // Verify that the listener is always notified on the same thread.
-            assertEquals(mExecutorThread, Thread.currentThread());
+            assertThat(Thread.currentThread()).isEqualTo(mExecutorThread);
         }
     }
 

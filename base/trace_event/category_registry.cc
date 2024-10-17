@@ -12,7 +12,7 @@
 #include "base/check.h"
 #include "base/debug/leak_annotations.h"
 #include "base/notreached.h"
-#include "base/third_party/dynamic_annotations/dynamic_annotations.h"
+#include "third_party/abseil-cpp/absl/base/dynamic_annotations.h"
 
 namespace base {
 namespace trace_event {
@@ -20,7 +20,9 @@ namespace trace_event {
 namespace {
 
 // |categories_| might end up causing creating dynamic initializers if not POD.
-static_assert(std::is_pod<TraceCategory>::value, "TraceCategory must be POD");
+static_assert(std::is_trivial_v<TraceCategory> &&
+                  std::is_standard_layout_v<TraceCategory>,
+              "TraceCategory must be POD");
 
 }  // namespace
 
@@ -45,8 +47,8 @@ void CategoryRegistry::Initialize() {
   // traced or not, so we allow races on the enabled flag to keep the trace
   // macros fast.
   for (size_t i = 0; i < kMaxCategories; ++i) {
-    ANNOTATE_BENIGN_RACE(categories_[i].state_ptr(),
-                         "trace_event category enabled");
+    ABSL_ANNOTATE_BENIGN_RACE(categories_[i].state_ptr(),
+                              "trace_event category enabled");
     // If this DCHECK is hit in a test it means that ResetForTesting() is not
     // called and the categories state leaks between test fixtures.
     DCHECK(!categories_[i].is_enabled());
@@ -130,12 +132,12 @@ bool CategoryRegistry::IsMetaCategory(const TraceCategory* category) {
 }
 
 // static
-CategoryRegistry::Range CategoryRegistry::GetAllCategories() {
+base::span<TraceCategory> CategoryRegistry::GetAllCategories() {
   // The |categories_| array is append only. We have to only guarantee to
   // not return an index to a category which is being initialized by
   // GetOrCreateCategoryByName().
   size_t category_index = category_index_.load(std::memory_order_acquire);
-  return CategoryRegistry::Range(&categories_[0], &categories_[category_index]);
+  return base::make_span(categories_).first(category_index);
 }
 
 // static
